@@ -59,11 +59,42 @@ traces in `ui.perfetto.dev` with one key.
 
 ## Install
 
+### Prebuilt binaries
+
+Each tagged release publishes archives for macOS (Intel + Apple Silicon),
+Linux (x86_64 + aarch64), and Windows (x86_64) to the
+[GitHub Releases](https://github.com/r0adkll/perfetto-cli/releases) page,
+along with a shell installer and a Homebrew formula.
+
+**Shell installer (macOS / Linux):**
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/r0adkll/perfetto-cli/releases/latest/download/perfetto-cli-installer.sh \
+  | sh
+```
+
+The installer drops the binary into `~/.cargo/bin` (or `$CARGO_HOME/bin`) and
+prints any `PATH` tweaks you need.
+
+**Homebrew (macOS / Linux):**
+
+```bash
+brew install r0adkll/tap/perfetto-cli
+```
+
+**Windows:**
+
+Grab `perfetto-cli-x86_64-pc-windows-msvc.zip` from the latest release, unzip
+it, and drop `perfetto-cli.exe` somewhere on your `PATH`.
+
+### From source
+
 ```bash
 # run from a checkout
 cargo run --release
 
-# or install into ~/.cargo/bin
+# or install into ~/.cargo/bin from a checkout
 cargo install --path .
 ```
 
@@ -169,6 +200,66 @@ Unit tests cover the `adb devices -l` parser, the textproto builder (including
 escape sequences and the `track_event` gate), capture helpers (`parse_pid`,
 `build_component`), the slugify function for session folders, and the shared
 text-input helper's edit shortcuts.
+
+## Releasing
+
+Releases are driven by [cargo-dist](https://github.com/axodotdev/cargo-dist).
+A tag push triggers `.github/workflows/release.yml`, which cross-builds every
+target in `dist-workspace.toml`, uploads archives + checksums to a new GitHub
+Release, generates a shell installer, and publishes a Homebrew formula to
+[`r0adkll/homebrew-tap`](https://github.com/r0adkll/homebrew-tap).
+
+### Cut a release
+
+```bash
+# 1. Bump the version in Cargo.toml + refresh the lockfile
+cargo set-version 0.1.1            # or hand-edit Cargo.toml
+cargo check                         # updates Cargo.lock
+
+# 2. Commit the bump
+git add Cargo.toml Cargo.lock
+git commit -m "Release v0.1.1"
+
+# 3. Tag and push
+git tag v0.1.1
+git push origin main v0.1.1
+```
+
+The matrix build kicks off automatically. When every target finishes the
+Release is published with:
+
+- Per-target archives (`.tar.xz` on Unix, `.zip` on Windows)
+- `sha256.txt` checksums and `source.tar.gz`
+- `perfetto-cli-installer.sh` (the curl-pipe-sh installer)
+- A PR or direct push to the Homebrew tap with the updated formula
+
+### Dry-run locally
+
+```bash
+# See what the pipeline *would* build without pushing anything
+dist plan
+
+# Actually build one target locally to catch errors before tagging
+dist build --artifacts=local --target aarch64-apple-darwin
+```
+
+### Secrets
+
+The Homebrew publish step needs a Personal Access Token with write access to
+`r0adkll/homebrew-tap`. Store it as the `HOMEBREW_TAP_TOKEN` repo secret on
+this repository. The default `GITHUB_TOKEN` only has access to the current
+repo and can't push to the tap.
+
+### Upgrading cargo-dist
+
+Bump `cargo-dist-version` in `dist-workspace.toml`, then regenerate the
+workflow so the tool version and the workflow stay in sync:
+
+```bash
+dist generate
+git add dist-workspace.toml .github/workflows/release.yml
+git commit -m "Upgrade cargo-dist to vX.Y.Z"
+```
 
 ## Credits
 
