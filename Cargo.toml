@@ -5,7 +5,7 @@ edition = "2024"
 description = "A Rust TUI for managing Android Perfetto trace sessions."
 repository = "https://github.com/r0adkll/perfetto-cli"
 homepage = "https://github.com/r0adkll/perfetto-cli"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 readme = "README.md"
 
 [dependencies]
