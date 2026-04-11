@@ -2,6 +2,10 @@
 name = "perfetto-cli"
 version = "0.1.0"
 edition = "2024"
+description = "A Rust TUI for managing Android Perfetto trace sessions."
+repository = "https://github.com/r0adkll/perfetto-cli"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.102"
@@ -20,3 +24,17 @@ tracing = "0.1.44"
 tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 webbrowser = "1.2.0"
+
+# Release profile tuned for distributed binaries. `lto = "thin"` is the
+# sweet spot between binary size and link time, `codegen-units = 1` lets
+# the optimizer see the whole crate, and `strip = "symbols"` roughly halves
+# the final size by dropping debug symbols.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
