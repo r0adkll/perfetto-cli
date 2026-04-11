@@ -1,0 +1,587 @@
+use std::path::PathBuf;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+
+use crate::db::Database;
+use crate::db::traces::TraceRecord;
+use crate::perfetto::textproto;
+use crate::session::Session;
+use crate::tui::chrome;
+use crate::tui::text_input::{self, TextAction};
+use crate::tui::theme;
+
+/// Minimum total terminal width at which we split the session detail into a
+/// two-pane layout (session + traces on the left, textproto preview on the
+/// right). Below this we fall back to the original single-column layout so
+/// narrow terminals still look sensible.
+const TWO_PANE_WIDTH: u16 = 120;
+
+const TRACE_EXT: &str = ".pftrace";
+
+pub struct SessionDetailScreen {
+    session: Session,
+    traces: Vec<TraceRecord>,
+    /// Indices into `traces` that survive the current tag filter. Selection
+    /// indexes into this, not `traces`, so filtering never points at a hidden
+    /// row.
+    visible: Vec<usize>,
+    list_state: ListState,
+    error: Option<String>,
+    status: Option<String>,
+    mode: Mode,
+    tag_filter: Option<String>,
+}
+
+enum Mode {
+    Browse,
+    Rename { buffer: String },
+    EditTags { buffer: String },
+    ConfirmDelete,
+}
+
+pub enum DetailAction {
+    None,
+    Back,
+    EditConfig,
+    Capture,
+    OpenTrace(PathBuf),
+}
+
+impl SessionDetailScreen {
+    pub fn new(session: Session, db: &Database) -> Self {
+        let mut screen = Self {
+            session,
+            traces: Vec::new(),
+            visible: Vec::new(),
+            list_state: ListState::default(),
+            error: None,
+            status: None,
+            mode: Mode::Browse,
+            tag_filter: None,
+        };
+        screen.reload(db);
+        screen
+    }
+
+    pub fn reload(&mut self, db: &Database) {
+        let Some(id) = self.session.id else {
+            return;
+        };
+        match db.list_traces(id) {
+            Ok(traces) => {
+                self.traces = traces;
+                self.error = None;
+                self.apply_filter();
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    fn apply_filter(&mut self) {
+        self.visible = self
+            .traces
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| match &self.tag_filter {
+                Some(tag) => t.tags.iter().any(|x| x == tag),
+                None => true,
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        if self.visible.is_empty() {
+            self.list_state.select(None);
+            return;
+        }
+        let clamped = self
+            .list_state
+            .selected()
+            .map(|i| i.min(self.visible.len() - 1))
+            .unwrap_or(0);
+        self.list_state.select(Some(clamped));
+    }
+
+    fn all_tags(&self) -> Vec<String> {
+        let mut tags: Vec<String> = self
+            .traces
+            .iter()
+            .flat_map(|t| t.tags.iter().cloned())
+            .collect();
+        tags.sort();
+        tags.dedup();
+        tags
+    }
+
+    fn cycle_filter(&mut self) {
+        let tags = self.all_tags();
+        self.tag_filter = match &self.tag_filter {
+            None => tags.first().cloned(),
+            Some(current) => {
+                let idx = tags.iter().position(|t| t == current);
+                match idx {
+                    Some(i) if i + 1 < tags.len() => Some(tags[i + 1].clone()),
+                    _ => None,
+                }
+            }
+        };
+        self.apply_filter();
+    }
+
+    pub fn on_key(&mut self, db: &Database, key: KeyEvent) -> DetailAction {
+        if key.kind != KeyEventKind::Press {
+            return DetailAction::None;
+        }
+        // Any key press dismisses the transient status line; error stays
+        // until explicitly cleared.
+        self.status = None;
+
+        match &mut self.mode {
+            Mode::Rename { .. } => {
+                return self.handle_rename_key(db, key);
+            }
+            Mode::EditTags { .. } => {
+                return self.handle_tags_key(db, key);
+            }
+            Mode::ConfirmDelete => {
+                return self.handle_confirm_delete(db, key);
+            }
+            Mode::Browse => {}
+        }
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => DetailAction::Back,
+            KeyCode::Char('e') => DetailAction::EditConfig,
+            KeyCode::Char('c') => DetailAction::Capture,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.move_selection(1);
+                DetailAction::None
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.move_selection(-1);
+                DetailAction::None
+            }
+            KeyCode::Char('r') => {
+                if let Some(t) = self.selected_trace() {
+                    let seed = t
+                        .label
+                        .clone()
+                        .unwrap_or_else(|| file_name(&t.file_path));
+                    let buffer = strip_trace_ext(&seed).to_string();
+                    self.mode = Mode::Rename { buffer };
+                }
+                DetailAction::None
+            }
+            KeyCode::Char('t') => {
+                if let Some(t) = self.selected_trace() {
+                    let buffer = t.tags.join(", ");
+                    self.mode = Mode::EditTags { buffer };
+                }
+                DetailAction::None
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                if self.selected_trace().is_some() {
+                    self.mode = Mode::ConfirmDelete;
+                }
+                DetailAction::None
+            }
+            KeyCode::Char('f') => {
+                self.cycle_filter();
+                DetailAction::None
+            }
+            KeyCode::Char('o') | KeyCode::Enter => {
+                if let Some(t) = self.selected_trace() {
+                    DetailAction::OpenTrace(t.file_path.clone())
+                } else {
+                    DetailAction::None
+                }
+            }
+            _ => DetailAction::None,
+        }
+    }
+
+    pub fn set_status(&mut self, message: String) {
+        self.status = Some(message);
+        self.error = None;
+    }
+
+    pub fn set_error(&mut self, message: String) {
+        self.error = Some(message);
+        self.status = None;
+    }
+
+    fn handle_rename_key(&mut self, db: &Database, key: KeyEvent) -> DetailAction {
+        let Mode::Rename { mut buffer } = std::mem::replace(&mut self.mode, Mode::Browse) else {
+            return DetailAction::None;
+        };
+        // Filenames should stay shell-friendly — translate literal spaces to
+        // dashes as the user types. Tag editing still allows spaces.
+        let mut key = key;
+        if matches!(key.code, KeyCode::Char(' ')) {
+            key.code = KeyCode::Char('-');
+        }
+        match text_input::apply(&mut buffer, &key) {
+            TextAction::Cancel => {}
+            TextAction::Submit => {
+                if let Some(t) = self.selected_trace().cloned() {
+                    let stem = strip_trace_ext(buffer.trim()).trim();
+                    let label_opt = if stem.is_empty() {
+                        None
+                    } else {
+                        Some(format!("{stem}{TRACE_EXT}"))
+                    };
+                    if let Err(e) = db.rename_trace(t.id, label_opt.as_deref()) {
+                        self.error = Some(format!("rename failed: {e}"));
+                    }
+                    self.reload(db);
+                }
+            }
+            TextAction::Edited | TextAction::Ignored => {
+                self.mode = Mode::Rename { buffer };
+            }
+        }
+        DetailAction::None
+    }
+
+    fn handle_tags_key(&mut self, db: &Database, key: KeyEvent) -> DetailAction {
+        let Mode::EditTags { mut buffer } = std::mem::replace(&mut self.mode, Mode::Browse) else {
+            return DetailAction::None;
+        };
+        match text_input::apply(&mut buffer, &key) {
+            TextAction::Cancel => {}
+            TextAction::Submit => {
+                if let Some(t) = self.selected_trace().cloned() {
+                    let tags: Vec<String> = buffer
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if let Err(e) = db.set_trace_tags(t.id, &tags) {
+                        self.error = Some(format!("tag save failed: {e}"));
+                    }
+                    self.reload(db);
+                }
+            }
+            TextAction::Edited | TextAction::Ignored => {
+                self.mode = Mode::EditTags { buffer };
+            }
+        }
+        DetailAction::None
+    }
+
+    fn handle_confirm_delete(&mut self, db: &Database, key: KeyEvent) -> DetailAction {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                if let Some(t) = self.selected_trace().cloned() {
+                    if let Err(e) = db.delete_trace(t.id) {
+                        self.error = Some(format!("db delete failed: {e}"));
+                    }
+                    if t.file_path.exists() {
+                        if let Err(e) = std::fs::remove_file(&t.file_path) {
+                            self.error = Some(format!("file delete failed: {e}"));
+                        }
+                    }
+                    self.reload(db);
+                }
+                self.mode = Mode::Browse;
+            }
+            _ => self.mode = Mode::Browse,
+        }
+        DetailAction::None
+    }
+
+    fn move_selection(&mut self, delta: i32) {
+        if self.visible.is_empty() {
+            return;
+        }
+        let len = self.visible.len() as i32;
+        let current = self.list_state.selected().unwrap_or(0) as i32;
+        let next = (current + delta).rem_euclid(len);
+        self.list_state.select(Some(next as usize));
+    }
+
+    fn selected_trace(&self) -> Option<&TraceRecord> {
+        let slot = self.list_state.selected()?;
+        let idx = *self.visible.get(slot)?;
+        self.traces.get(idx)
+    }
+
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    pub fn render(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(chrome::HEADER_HEIGHT),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+
+        let header = chrome::app_header(Line::from(vec![
+            Span::styled("  📁 ", theme::title()),
+            Span::styled(
+                self.session.name.clone(),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  — {}", self.session.package_name),
+                theme::hint(),
+            ),
+        ]));
+        frame.render_widget(header, outer[0]);
+
+        // Split the middle row into left (session + traces) and right
+        // (textproto preview) when there's enough horizontal room. On narrow
+        // terminals we drop the right pane entirely.
+        let (left_area, right_area) = if area.width >= TWO_PANE_WIDTH {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .split(outer[1]);
+            (cols[0], Some(cols[1]))
+        } else {
+            (outer[1], None)
+        };
+
+        let left_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(8), Constraint::Min(1)])
+            .split(left_area);
+        let meta_area = left_rows[0];
+        let traces_area = left_rows[1];
+
+        if let Some(right_area) = right_area {
+            let textproto = textproto::build(&self.session.config);
+            let preview = Paragraph::new(textproto)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Config (textproto) "),
+                )
+                .wrap(Wrap { trim: false });
+            frame.render_widget(preview, right_area);
+        }
+
+        let metadata_lines = vec![
+            Line::from(vec![
+                Span::styled("  Device:     ", theme::hint()),
+                Span::raw(
+                    self.session
+                        .device_serial
+                        .clone()
+                        .unwrap_or_else(|| "(none)".into()),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  Created:    ", theme::hint()),
+                Span::raw(self.session.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("  Folder:     ", theme::hint()),
+                Span::raw(self.session.folder_path.to_string_lossy().into_owned()),
+            ]),
+            Line::from(vec![
+                Span::styled("  Duration:   ", theme::hint()),
+                Span::raw(format!("{} ms", self.session.config.duration_ms)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Buffer:     ", theme::hint()),
+                Span::raw(format!("{} KB", self.session.config.buffer_size_kb)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Cold start: ", theme::hint()),
+                Span::raw(if self.session.config.cold_start {
+                    "yes"
+                } else {
+                    "no"
+                }),
+                Span::styled("    Auto-open: ", theme::hint()),
+                Span::raw(if self.session.config.auto_open {
+                    "yes"
+                } else {
+                    "no"
+                }),
+            ]),
+        ];
+        frame.render_widget(
+            Paragraph::new(metadata_lines)
+                .block(Block::default().borders(Borders::ALL).title(" Session ")),
+            meta_area,
+        );
+
+        let title = match &self.tag_filter {
+            Some(tag) => format!(" Traces — filter: {tag} "),
+            None => " Traces ".into(),
+        };
+        let traces_block = Block::default().borders(Borders::ALL).title(title);
+
+        if let Some(err) = &self.error {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("  ✗ {err}"),
+                    Style::default().fg(theme::ERR),
+                )))
+                .block(traces_block),
+                traces_area,
+            );
+        } else if self.visible.is_empty() {
+            let msg = if self.traces.is_empty() {
+                "  No traces captured yet."
+            } else {
+                "  No traces match the current filter."
+            };
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(""),
+                    Line::from(msg),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        if self.traces.is_empty() {
+                            "  Press [c] to run a capture."
+                        } else {
+                            "  Press [f] to cycle the filter."
+                        },
+                        theme::hint(),
+                    )),
+                ])
+                .block(traces_block),
+                traces_area,
+            );
+        } else {
+            let items: Vec<ListItem> = self
+                .visible
+                .iter()
+                .filter_map(|i| self.traces.get(*i))
+                .map(|t| {
+                    let label = t
+                        .label
+                        .clone()
+                        .unwrap_or_else(|| file_name(&t.file_path));
+                    let when = t.captured_at.format("%Y-%m-%d %H:%M:%S").to_string();
+                    let size = t
+                        .size_bytes
+                        .map(|b| format!("{:.1} KB", b as f64 / 1024.0))
+                        .unwrap_or_else(|| "—".into());
+                    let duration = t
+                        .duration_ms
+                        .map(|ms| format!("{:.1}s", ms as f64 / 1000.0))
+                        .unwrap_or_else(|| "—".into());
+                    let mut spans = vec![
+                        Span::raw("  "),
+                        Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+                        Span::raw("  "),
+                        Span::styled(when, theme::hint()),
+                        Span::raw("  "),
+                        Span::styled(format!("{size}  {duration}"), theme::hint()),
+                    ];
+                    if !t.tags.is_empty() {
+                        spans.push(Span::raw("  "));
+                        spans.push(Span::styled(
+                            format!("#{}", t.tags.join(" #")),
+                            Style::default().fg(theme::ACCENT),
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
+                })
+                .collect();
+            let list = List::new(items)
+                .block(traces_block)
+                .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+                .highlight_symbol("▶ ");
+            frame.render_stateful_widget(list, traces_area, &mut self.list_state);
+        }
+
+        let footer = match &self.mode {
+            Mode::Rename { buffer } => Line::from(vec![
+                Span::styled(" rename › ", theme::title()),
+                Span::raw(buffer.clone()),
+                Span::styled("█", Style::default().fg(theme::ACCENT)),
+                Span::styled(TRACE_EXT, theme::hint()),
+                Span::styled(
+                    "   [Enter] save  [Esc] cancel  [Alt-⌫] word  [Ctrl-U] clear",
+                    theme::hint(),
+                ),
+            ]),
+            Mode::EditTags { buffer } => Line::from(vec![
+                Span::styled(" tags › ", theme::title()),
+                Span::raw(buffer.clone()),
+                Span::styled("█", Style::default().fg(theme::ACCENT)),
+                Span::styled(
+                    "   comma-separated  [Enter] save  [Esc] cancel",
+                    theme::hint(),
+                ),
+            ]),
+            Mode::ConfirmDelete => {
+                let name = self
+                    .selected_trace()
+                    .map(|t| t.label.clone().unwrap_or_else(|| file_name(&t.file_path)))
+                    .unwrap_or_else(|| "?".into());
+                Line::from(vec![
+                    Span::styled(
+                        format!(" ⚠ delete \"{name}\" and its file? "),
+                        Style::default().fg(theme::WARN),
+                    ),
+                    Span::styled("[y]", theme::title()),
+                    Span::raw(" yes  "),
+                    Span::styled("[n]", theme::title()),
+                    Span::raw(" cancel"),
+                ])
+            }
+            Mode::Browse => {
+                if let Some(msg) = &self.status {
+                    Line::from(Span::styled(
+                        format!(" ✓ {msg}"),
+                        Style::default().fg(theme::OK),
+                    ))
+                } else {
+                    Line::from(vec![
+                        Span::styled(" [c]", theme::title()),
+                        Span::raw(" capture  "),
+                        Span::styled("[o]", theme::title()),
+                        Span::raw(" open  "),
+                        Span::styled("[r]", theme::title()),
+                        Span::raw(" rename  "),
+                        Span::styled("[t]", theme::title()),
+                        Span::raw(" tag  "),
+                        Span::styled("[x]", theme::title()),
+                        Span::raw(" delete  "),
+                        Span::styled("[f]", theme::title()),
+                        Span::raw(" filter  "),
+                        Span::styled("[e]", theme::title()),
+                        Span::raw(" config  "),
+                        Span::styled("[Esc]", theme::title()),
+                        Span::raw(" back"),
+                    ])
+                }
+            }
+        };
+        frame.render_widget(Paragraph::new(footer), outer[2]);
+    }
+}
+
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// Case-insensitively strip the trailing `.pftrace` extension, if present.
+fn strip_trace_ext(s: &str) -> &str {
+    if s.len() >= TRACE_EXT.len()
+        && s[s.len() - TRACE_EXT.len()..].eq_ignore_ascii_case(TRACE_EXT)
+    {
+        &s[..s.len() - TRACE_EXT.len()]
+    } else {
+        s
+    }
+}
