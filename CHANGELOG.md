@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-12
+
 ### Changed
 - Expanded Suggestions, Config, and Startup Commands panels in the new session wizard (6→8, 5→7, 5→7 rows) for better visibility
 
@@ -101,5 +103,5 @@ Initial release.
 - 🏠 Welcome banner with ASCII logo on empty sessions list
 - 🔧 Release pipeline via cargo-dist with shell installer + Homebrew tap
 
-[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.2.0...v0.3.0[0.2.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...v0.2.0[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
+[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.0...v0.3.1[0.3.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.2.0...v0.3.0[0.2.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...v0.2.0[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
