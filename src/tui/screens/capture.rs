@@ -182,15 +182,15 @@ impl CaptureScreen {
     fn status_style(&self) -> Style {
         if let Some(result) = &self.result {
             return match result {
-                Ok(res) if res.cancelled => Style::default().fg(theme::WARN),
-                Ok(_) => Style::default().fg(theme::OK),
-                Err(_) => Style::default().fg(theme::ERR),
+                Ok(res) if res.cancelled => Style::default().fg(theme::warn()),
+                Ok(_) => Style::default().fg(theme::ok()),
+                Err(_) => Style::default().fg(theme::err()),
             };
         }
         if self.cancelling {
-            Style::default().fg(theme::WARN)
+            Style::default().fg(theme::warn())
         } else {
-            Style::default().fg(theme::ACCENT)
+            Style::default().fg(theme::accent())
         }
     }
 
@@ -240,11 +240,11 @@ impl CaptureScreen {
         // Progress bar
         let gauge_color = if self.cancelling || matches!(self.result, Some(Ok(ref r)) if r.cancelled)
         {
-            theme::WARN
+            theme::warn()
         } else if matches!(self.result, Some(Err(_))) {
-            theme::ERR
+            theme::err()
         } else {
-            theme::ACCENT
+            theme::accent()
         };
         let gauge = Gauge::default()
             .block(Block::default().borders(Borders::ALL).title(" Progress "))
@@ -262,10 +262,10 @@ impl CaptureScreen {
             .iter()
             .map(|entry| {
                 let (icon, style) = match entry.level {
-                    LogLevel::Info => ("•", Style::default().fg(theme::ACCENT)),
-                    LogLevel::Ok => ("✓", Style::default().fg(theme::OK)),
-                    LogLevel::Warn => ("⚠", Style::default().fg(theme::WARN)),
-                    LogLevel::Err => ("✗", Style::default().fg(theme::ERR)),
+                    LogLevel::Info => ("•", Style::default().fg(theme::accent())),
+                    LogLevel::Ok => ("✓", Style::default().fg(theme::ok())),
+                    LogLevel::Warn => ("⚠", Style::default().fg(theme::warn())),
+                    LogLevel::Err => ("✗", Style::default().fg(theme::err())),
                 };
                 Line::from(vec![
                     Span::raw("  "),
@@ -292,7 +292,7 @@ impl CaptureScreen {
                         result.duration_ms as f64 / 1000.0
                     )
                 };
-                let color = if result.cancelled { theme::WARN } else { theme::OK };
+                let color = if result.cancelled { theme::warn() } else { theme::ok() };
                 log_lines.push(Line::from(Span::styled(
                     headline,
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -306,7 +306,7 @@ impl CaptureScreen {
                 log_lines.push(Line::from(""));
                 log_lines.push(Line::from(Span::styled(
                     format!("  ✗ Capture failed: {msg}"),
-                    Style::default().fg(theme::ERR),
+                    Style::default().fg(theme::err()),
                 )));
             }
             None => {}
@@ -326,7 +326,7 @@ impl CaptureScreen {
         } else if self.cancelling {
             Line::from(Span::styled(
                 " stopping — waiting for perfetto to flush and exit",
-                Style::default().fg(theme::WARN),
+                Style::default().fg(theme::warn()),
             ))
         } else {
             Line::from(vec![

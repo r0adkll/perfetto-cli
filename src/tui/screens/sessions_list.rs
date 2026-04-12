@@ -24,6 +24,7 @@ pub enum SessionsAction {
     OpenDevicePicker,
     OpenConfigList,
     OpenCommandSets,
+    OpenThemePicker,
     NewSession,
     OpenSession(i64),
 }
@@ -83,6 +84,7 @@ impl SessionsListScreen {
             KeyCode::Char('d') => SessionsAction::OpenDevicePicker,
             KeyCode::Char('g') => SessionsAction::OpenConfigList,
             KeyCode::Char('s') => SessionsAction::OpenCommandSets,
+            KeyCode::Char('t') => SessionsAction::OpenThemePicker,
             KeyCode::Char('n') => SessionsAction::NewSession,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.move_selection(1);
@@ -146,7 +148,7 @@ impl SessionsListScreen {
         if let Some(err) = &self.error {
             let p = Paragraph::new(Line::from(Span::styled(
                 format!("  ✗ {err}"),
-                Style::default().fg(theme::ERR),
+                Style::default().fg(theme::err()),
             )))
             .block(body_block);
             frame.render_widget(p, chunks[1]);
@@ -197,7 +199,7 @@ impl SessionsListScreen {
                 .collect();
             let list = List::new(items)
                 .block(body_block)
-                .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+                .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
                 .highlight_symbol("▶ ");
             frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
         }
@@ -210,7 +212,7 @@ impl SessionsListScreen {
             Line::from(vec![
                 Span::styled(
                     format!(" ⚠ delete \"{name}\" and its folder? "),
-                    Style::default().fg(theme::WARN),
+                    Style::default().fg(theme::warn()),
                 ),
                 Span::styled("[y]", theme::title()),
                 Span::raw(" yes  "),
@@ -232,7 +234,9 @@ impl SessionsListScreen {
                 Span::styled("[g]", theme::title()),
                 Span::raw(" configs  "),
                 Span::styled("[s]", theme::title()),
-                Span::raw(" commands"),
+                Span::raw(" commands  "),
+                Span::styled("[t]", theme::title()),
+                Span::raw(" theme"),
             ])
         };
         frame.render_widget(Paragraph::new(footer), chunks[2]);

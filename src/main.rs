@@ -28,6 +28,12 @@ async fn main() -> Result<()> {
     let db = db::Database::open(&paths.db_file())?;
     db.migrate()?;
 
+    // Write the embedded Perfetto theme to disk and activate the persisted
+    // (or default) theme before the TUI renders its first frame.
+    config::ensure_default_theme(&paths);
+    let saved_theme = db.get_setting("theme").ok().flatten();
+    config::init_theme(&paths, saved_theme.as_deref());
+
     let mut terminal = tui::init()?;
     let result = app::App::new(db, paths).run(&mut terminal).await;
     tui::restore()?;

@@ -37,7 +37,7 @@ impl<'a> ConfigImportScreen<'a> {
                 .title(" Paste or type textproto config "),
         );
         textarea.set_cursor_line_style(Style::default());
-        textarea.set_line_number_style(Style::default().fg(theme::DIM));
+        textarea.set_line_number_style(Style::default().fg(theme::dim()));
         Self {
             textarea,
             mode: Mode::Editing,
@@ -55,7 +55,7 @@ impl<'a> ConfigImportScreen<'a> {
                 .title(" Edit imported textproto config "),
         );
         textarea.set_cursor_line_style(Style::default());
-        textarea.set_line_number_style(Style::default().fg(theme::DIM));
+        textarea.set_line_number_style(Style::default().fg(theme::dim()));
         Self {
             textarea,
             mode: Mode::Editing,
@@ -145,14 +145,14 @@ impl<'a> ConfigImportScreen<'a> {
         let footer = if let Some(msg) = &self.error {
             Line::from(Span::styled(
                 format!(" ✗ {msg}"),
-                Style::default().fg(theme::ERR),
+                Style::default().fg(theme::err()),
             ))
         } else {
             match &self.mode {
                 Mode::Naming { buffer } => Line::from(vec![
                     Span::styled(" config name › ", theme::title()),
                     Span::raw(buffer.clone()),
-                    Span::styled("█", Style::default().fg(theme::ACCENT)),
+                    Span::styled("█", Style::default().fg(theme::accent())),
                     Span::styled("   [Enter] save  [Esc] cancel", theme::hint()),
                 ]),
                 Mode::Editing => Line::from(vec![

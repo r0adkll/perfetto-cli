@@ -1,0 +1,75 @@
+[meta]
+name = "Perfetto"
+author = "perfetto-cli"
+variant = "dark"
+description = "Official Perfetto brand colors from ui.perfetto.dev"
+
+[palette]
+bg = "#202020"
+bg-secondary = "#343434"
+bg-tertiary = "#4a4a4a"
+text = "#dce0e2"
+text-muted = "#a0a2a5"
+text-dim = "#8d8d8e"
+text-hint = "#9aa0a6"
+primary = "#598bed"
+accent = "#2667e7"
+border = "#484848"
+border-secondary = "#383838"
+green = "#63c063"
+red = "#e65a5a"
+yellow = "#f4bc43"
+blue = "#598bed"
+purple = "#9334e6"
+cyan = "#46bdc6"
+orange = "#ff6d01"
+
+[tokens]
+"text.primary" = "text"
+"text.secondary" = "text-muted"
+"text.muted" = "text-hint"
+"text.dim" = "text-dim"
+"bg.base" = "bg"
+"bg.panel" = "bg-secondary"
+"bg.code" = "bg-secondary"
+"bg.highlight" = "bg-tertiary"
+"bg.selection" = "bg-tertiary"
+"accent.primary" = "primary"
+"accent.secondary" = "accent"
+"accent.tertiary" = "cyan"
+"accent.deep" = "accent"
+"success" = "green"
+"error" = "red"
+"warning" = "yellow"
+"info" = "blue"
+"border.focused" = "primary"
+"border.unfocused" = "border"
+"code.keyword" = "purple"
+"code.function" = "primary"
+"code.string" = "green"
+"code.number" = "orange"
+"code.comment" = "text-dim"
+"code.type" = "cyan"
+"code.line_number" = "text-dim"
+
+[styles]
+keyword = { fg = "accent.primary", bold = true }
+line_number = { fg = "code.line_number" }
+selected = { fg = "text.primary", bg = "bg.highlight" }
+active_selected = { fg = "bg.base", bg = "accent.primary", bold = true }
+focused_border = { fg = "border.focused" }
+unfocused_border = { fg = "border.unfocused" }
+success_style = { fg = "success" }
+error_style = { fg = "error" }
+warning_style = { fg = "warning" }
+info_style = { fg = "info" }
+dimmed = { fg = "text.dim" }
+muted = { fg = "text.muted" }
+inline_code = { fg = "accent.tertiary", bg = "bg.code" }
+
+[gradients]
+primary = ["primary", "accent"]
+warm = ["yellow", "orange", "red"]
+success_gradient = ["green", "cyan"]
+error_gradient = ["red", "orange"]
+aurora = ["primary", "purple", "cyan", "green"]

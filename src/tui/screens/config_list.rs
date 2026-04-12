@@ -224,7 +224,7 @@ impl ConfigListScreen {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     format!("  ✗ {err}"),
-                    Style::default().fg(theme::ERR),
+                    Style::default().fg(theme::err()),
                 )))
                 .block(body_block),
                 chunks[1],
@@ -268,7 +268,7 @@ impl ConfigListScreen {
                 .collect();
             let list = List::new(items)
                 .block(body_block)
-                .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+                .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
                 .highlight_symbol("▶ ");
             frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
         }
@@ -277,7 +277,7 @@ impl ConfigListScreen {
             Mode::Naming { buffer } => Line::from(vec![
                 Span::styled(" config name › ", theme::title()),
                 Span::raw(buffer.clone()),
-                Span::styled("█", Style::default().fg(theme::ACCENT)),
+                Span::styled("█", Style::default().fg(theme::accent())),
                 Span::styled("   [Enter] create  [Esc] cancel", theme::hint()),
             ]),
             Mode::ConfirmDelete => {
@@ -288,7 +288,7 @@ impl ConfigListScreen {
                 Line::from(vec![
                     Span::styled(
                         format!(" ⚠ delete \"{name}\"? "),
-                        Style::default().fg(theme::WARN),
+                        Style::default().fg(theme::warn()),
                     ),
                     Span::styled("[y]", theme::title()),
                     Span::raw(" yes  "),
@@ -300,7 +300,7 @@ impl ConfigListScreen {
                 if let Some(msg) = self.status.get() {
                     Line::from(Span::styled(
                         format!(" ✓ {msg}"),
-                        Style::default().fg(theme::OK),
+                        Style::default().fg(theme::ok()),
                     ))
                 } else {
                     Line::from(vec![

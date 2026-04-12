@@ -187,7 +187,7 @@ impl CommandSetListScreen {
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     format!("  ✗ {err}"),
-                    Style::default().fg(theme::ERR),
+                    Style::default().fg(theme::err()),
                 ))
                 .block(block),
                 chunks[1],
@@ -240,7 +240,7 @@ impl CommandSetListScreen {
                 .collect();
             let list = List::new(items)
                 .block(block)
-                .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+                .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
                 .highlight_symbol("▶ ");
             frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
         }
@@ -249,7 +249,7 @@ impl CommandSetListScreen {
             Mode::Naming { buffer } => Line::from(vec![
                 Span::styled(" name › ", theme::title()),
                 Span::raw(buffer.clone()),
-                Span::styled("█", Style::default().fg(theme::ACCENT)),
+                Span::styled("█", Style::default().fg(theme::accent())),
                 Span::styled("   [Enter] create  [Esc] cancel", theme::hint()),
             ]),
             Mode::ConfirmDelete => {
@@ -257,7 +257,7 @@ impl CommandSetListScreen {
                 Line::from(vec![
                     Span::styled(
                         format!(" ⚠ delete \"{name}\"? "),
-                        Style::default().fg(theme::WARN),
+                        Style::default().fg(theme::warn()),
                     ),
                     Span::styled("[y]", theme::title()),
                     Span::raw(" yes  "),

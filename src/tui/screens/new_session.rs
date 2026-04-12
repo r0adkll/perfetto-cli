@@ -617,7 +617,7 @@ impl NewSessionScreen {
             submit_text,
             if self.focus == Focus::Submit {
                 Style::default()
-                    .bg(theme::ACCENT)
+                    .bg(theme::accent())
                     .fg(Color::Black)
                     .add_modifier(Modifier::BOLD)
             } else {
@@ -644,7 +644,7 @@ impl NewSessionScreen {
         let footer = match &self.error {
             Some(msg) => Line::from(Span::styled(
                 format!(" ✗ {msg}"),
-                Style::default().fg(theme::ERR),
+                Style::default().fg(theme::err()),
             )),
             None => Line::from(Span::styled(
                 " Tab/Shift+Tab to move focus  •  Enter advances  •  Esc cancels",
@@ -702,7 +702,7 @@ impl NewSessionScreen {
                 .collect();
             let list = List::new(items)
                 .block(device_block)
-                .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+                .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
                 .highlight_symbol("▶ ");
             frame.render_stateful_widget(list, area, &mut self.device_state);
         }
@@ -834,7 +834,7 @@ impl NewSessionScreen {
             .collect();
         let list = List::new(items)
             .block(block)
-            .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+            .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(list, area, &mut self.suggestions_state);
     }
@@ -875,7 +875,7 @@ impl NewSessionScreen {
 
         let list = List::new(items)
             .block(block)
-            .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+            .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(list, area, &mut self.config_state);
     }
@@ -909,7 +909,7 @@ impl NewSessionScreen {
 
         let list = List::new(items)
             .block(block)
-            .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+            .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(list, area, &mut self.command_set_state);
     }
@@ -944,9 +944,9 @@ enum TextField {
 
 fn focus_style(focused: bool) -> Style {
     if focused {
-        Style::default().fg(theme::ACCENT)
+        Style::default().fg(theme::accent())
     } else {
-        Style::default().fg(theme::DIM)
+        Style::default().fg(theme::dim())
     }
 }
 

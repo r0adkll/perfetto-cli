@@ -26,11 +26,11 @@ pub fn app_header<'a>(subtitle: Line<'a>) -> Paragraph<'a> {
     Paragraph::new(body).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::ACCENT))
+            .border_style(Style::default().fg(theme::accent()))
             .title(Span::styled(
                 title,
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             )),
     )
@@ -45,7 +45,7 @@ pub const HEADER_HEIGHT: u16 = 5;
 /// `Paragraph::alignment(Alignment::Center)`.
 pub fn home_banner() -> Vec<Line<'static>> {
     let accent = Style::default()
-        .fg(theme::ACCENT)
+        .fg(theme::accent())
         .add_modifier(Modifier::BOLD);
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(""));
@@ -67,21 +67,35 @@ pub fn home_banner() -> Vec<Line<'static>> {
     lines.push(Line::from(Span::styled(
         "Press [n] to create your first session",
         Style::default()
-            .fg(theme::ACCENT)
+            .fg(theme::accent_secondary())
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Press [g] to create/edit your trace configurations",
+        "Press [g] to manage your trace configurations",
         Style::default()
-            .fg(theme::ACCENT)
+            .fg(theme::accent_secondary())
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Press [d] to manager your devices",
+        "Press [d] to manage your devices",
         Style::default()
-            .fg(theme::ACCENT)
+            .fg(theme::accent_secondary())
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Press [s] to manage your startup commands",
+        Style::default()
+            .fg(theme::accent_secondary())
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Press [t] to change themes",
+        Style::default()
+            .fg(theme::accent_secondary())
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));

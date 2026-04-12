@@ -26,6 +26,7 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+opaline = { version = "0.4", features = ["global-state", "discovery", "widgets", "builtin-themes", "ratatui"] }
 urlencoding = "2.1.3"
 webbrowser = "1.2.0"
 

@@ -8,3 +8,4 @@ pub mod device_picker;
 pub mod new_session;
 pub mod session_detail;
 pub mod sessions_list;
+pub mod theme_picker;

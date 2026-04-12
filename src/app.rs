@@ -24,6 +24,7 @@ use crate::tui::screens::device_picker::{DevicePickerScreen, PickerAction};
 use crate::tui::screens::new_session::{NewSessionScreen, WizardAction};
 use crate::tui::screens::session_detail::{DetailAction, SessionDetailScreen};
 use crate::tui::screens::sessions_list::{SessionsAction, SessionsListScreen};
+use crate::tui::screens::theme_picker::{ThemePickerAction, ThemePickerScreen};
 use crate::ui_server::UiServer;
 
 /// Tracks what opened the config editor so we know where to route the save.
@@ -55,6 +56,7 @@ enum Screen {
     CommandSetList(CommandSetListScreen),
     CommandSetEditor(CommandSetEditorScreen),
     Capture(CaptureScreen),
+    ThemePicker(ThemePickerScreen),
 }
 
 pub struct App {
@@ -152,6 +154,7 @@ impl App {
             Screen::CommandSetList(_) => "Perfetto CLI — Startup Commands".to_string(),
             Screen::CommandSetEditor(_) => "Perfetto CLI — Edit Commands".to_string(),
             Screen::Capture(_) => "Perfetto CLI — Capturing".to_string(),
+            Screen::ThemePicker(_) => "Perfetto CLI — Theme".to_string(),
         };
         let _ = execute!(std::io::stdout(), SetTitle(title));
 
@@ -166,6 +169,7 @@ impl App {
             Screen::CommandSetList(cl) => cl.render(frame),
             Screen::CommandSetEditor(ce) => ce.render(frame),
             Screen::Capture(c) => c.render(frame),
+            Screen::ThemePicker(tp) => tp.render(frame),
         }
 
         // Render active device label inside the header box, right-aligned on
@@ -177,7 +181,7 @@ impl App {
                 Span::styled(
                     label.as_str(),
                     Style::default()
-                        .fg(theme::ACCENT)
+                        .fg(theme::accent())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
@@ -313,6 +317,10 @@ impl App {
                             session, &self.db,
                         ));
                     }
+                }
+                SessionsAction::OpenThemePicker => {
+                    self.screen =
+                        Screen::ThemePicker(ThemePickerScreen::new(self.paths.themes_dir()));
                 }
                 SessionsAction::None => {}
             },
@@ -472,6 +480,14 @@ impl App {
                         Screen::CommandSetList(CommandSetListScreen::new(self.db.clone()));
                 }
                 CmdEditorAction::None => {}
+            },
+            Screen::ThemePicker(tp) => match tp.on_key(key) {
+                ThemePickerAction::Back => self.return_to_sessions_list(),
+                ThemePickerAction::Selected(name) => {
+                    let _ = self.db.set_setting("theme", &name);
+                    self.return_to_sessions_list();
+                }
+                ThemePickerAction::None => {}
             },
         }
     }

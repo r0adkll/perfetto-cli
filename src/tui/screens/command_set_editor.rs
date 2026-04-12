@@ -271,12 +271,12 @@ impl CommandSetEditorScreen {
         let footer = if let Some(msg) = self.status.get() {
             Line::from(Span::styled(
                 format!(" ✓ {msg}"),
-                Style::default().fg(theme::OK),
+                Style::default().fg(theme::ok()),
             ))
         } else if let Some(msg) = &self.error {
             Line::from(Span::styled(
                 format!(" ✗ {msg}"),
-                Style::default().fg(theme::ERR),
+                Style::default().fg(theme::err()),
             ))
         } else {
             match &self.mode {
@@ -295,7 +295,7 @@ impl CommandSetEditorScreen {
                     Line::from(vec![
                         Span::styled(format!(" {label} › "), theme::title()),
                         Span::raw(buffer.clone()),
-                        Span::styled("█", Style::default().fg(theme::ACCENT)),
+                        Span::styled("█", Style::default().fg(theme::accent())),
                         Span::styled(
                             "   [Enter] next/done  [Esc] cancel",
                             theme::hint(),
@@ -392,9 +392,9 @@ impl CommandSetEditorScreen {
         let list = List::new(items)
             .block(block)
             .highlight_style(if is_browse {
-                Style::default().bg(theme::ACCENT).fg(Color::Black)
+                Style::default().bg(theme::accent()).fg(Color::Black)
             } else {
-                Style::default().fg(theme::ACCENT)
+                Style::default().fg(theme::accent())
             })
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(list, area, &mut self.list_state);
@@ -461,7 +461,7 @@ impl CommandSetEditorScreen {
                 };
                 let val_style = if is_editing {
                     Style::default()
-                        .fg(theme::ACCENT)
+                        .fg(theme::accent())
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -475,7 +475,7 @@ impl CommandSetEditorScreen {
                 ]));
                 lines.push(Line::from(Span::styled(
                     format!("   {}", arg_spec.description),
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::dim()),
                 )));
             }
         } else {
@@ -530,7 +530,7 @@ impl CommandSetEditorScreen {
         let mut picker_state = state.clone();
         let list = List::new(items)
             .block(block)
-            .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+            .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(list, area, &mut picker_state);
     }

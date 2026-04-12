@@ -42,11 +42,11 @@ impl From<DeviceState> for EntryState {
 impl EntryState {
     fn badge(&self) -> (&'static str, Style) {
         match self {
-            EntryState::Online => ("● online      ", Style::default().fg(theme::OK)),
-            EntryState::Offline => ("○ offline     ", Style::default().fg(theme::DIM)),
-            EntryState::Unauthorized => ("⚠ unauthorized", Style::default().fg(theme::WARN)),
-            EntryState::Other(_) => ("? other       ", Style::default().fg(theme::WARN)),
-            EntryState::NotConnected => ("· remembered  ", Style::default().fg(theme::DIM)),
+            EntryState::Online => ("● online      ", Style::default().fg(theme::ok())),
+            EntryState::Offline => ("○ offline     ", Style::default().fg(theme::dim())),
+            EntryState::Unauthorized => ("⚠ unauthorized", Style::default().fg(theme::warn())),
+            EntryState::Other(_) => ("? other       ", Style::default().fg(theme::warn())),
+            EntryState::NotConnected => ("· remembered  ", Style::default().fg(theme::dim())),
         }
     }
 
@@ -346,7 +346,7 @@ impl DevicePickerScreen {
                 let p = Paragraph::new(vec![
                     Line::from(Span::styled(
                         format!("  ✗ {msg}"),
-                        Style::default().fg(theme::ERR),
+                        Style::default().fg(theme::err()),
                     )),
                     Line::from(""),
                     Line::from(Span::styled("  Press [r] to retry", theme::hint())),
@@ -392,7 +392,7 @@ impl DevicePickerScreen {
                     .block(body_block)
                     .highlight_style(
                         Style::default()
-                            .bg(theme::ACCENT)
+                            .bg(theme::accent())
                             .fg(ratatui::style::Color::Black),
                     )
                     .highlight_symbol("▶ ");
@@ -512,7 +512,7 @@ impl DevicePickerScreen {
                 frame.render_widget(
                     Paragraph::new(vec![Line::from(Span::styled(
                         format!("  ✗ {msg}"),
-                        Style::default().fg(theme::ERR),
+                        Style::default().fg(theme::err()),
                     ))])
                     .block(block),
                     area,

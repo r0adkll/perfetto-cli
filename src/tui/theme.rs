@@ -2,24 +2,55 @@ use std::time::{Duration, Instant};
 
 use ratatui::style::{Color, Modifier, Style};
 
-pub const ACCENT: Color = Color::Cyan;
-pub const DIM: Color = Color::DarkGray;
+// ---------------------------------------------------------------------------
+// Color accessors — read from the opaline global theme so hot-swapping works.
+// ---------------------------------------------------------------------------
+
+pub fn accent() -> Color {
+    Color::from(opaline::current().color("accent.primary"))
+}
+
+pub fn accent_secondary() -> Color {
+    Color::from(opaline::current().color("accent.secondary"))
+}
+
+pub fn dim() -> Color {
+    Color::from(opaline::current().color("text.dim"))
+}
+
 #[allow(dead_code)]
-pub const OK: Color = Color::Green;
+pub fn ok() -> Color {
+    Color::from(opaline::current().color("success"))
+}
+
 #[allow(dead_code)]
-pub const WARN: Color = Color::Yellow;
+pub fn warn() -> Color {
+    Color::from(opaline::current().color("warning"))
+}
+
 #[allow(dead_code)]
-pub const ERR: Color = Color::Red;
+pub fn err() -> Color {
+    Color::from(opaline::current().color("error"))
+}
+
+// ---------------------------------------------------------------------------
+// Style helpers
+// ---------------------------------------------------------------------------
 
 pub fn title() -> Style {
-    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(accent())
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn hint() -> Style {
-    Style::default().fg(DIM)
+    Style::default().fg(Color::from(opaline::current().color("text.muted")))
 }
 
-/// A transient status message that auto-dismisses after a timeout.
+// ---------------------------------------------------------------------------
+// Transient status message (unchanged — not color-related)
+// ---------------------------------------------------------------------------
+
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]

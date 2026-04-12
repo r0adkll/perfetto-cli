@@ -792,12 +792,12 @@ impl ConfigEditorScreen {
         let footer = if let Some(msg) = &self.error {
             Line::from(Span::styled(
                 format!(" ✗ {msg}"),
-                Style::default().fg(theme::ERR),
+                Style::default().fg(theme::err()),
             ))
         } else if let Some(msg) = self.status.get() {
             Line::from(Span::styled(
                 format!(" ✓ {msg}"),
-                Style::default().fg(theme::OK),
+                Style::default().fg(theme::ok()),
             ))
         } else if self.editing.is_some() {
             Line::from(vec![
@@ -849,12 +849,12 @@ impl ConfigEditorScreen {
 
     fn render_item(&self, item: &EditorItem, focused: bool) -> Line<'static> {
         let arrow = if focused && item.is_selectable() {
-            Span::styled(" ▶ ", Style::default().fg(theme::ACCENT))
+            Span::styled(" ▶ ", Style::default().fg(theme::accent()))
         } else {
             Span::raw("   ")
         };
         let fs = if focused {
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -862,7 +862,7 @@ impl ConfigEditorScreen {
         match item {
             EditorItem::SectionHeader(label) => Line::from(vec![
                 Span::raw(" "),
-                Span::styled(label.to_string(), Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+                Span::styled(label.to_string(), Style::default().fg(theme::dim()).add_modifier(Modifier::BOLD)),
             ]),
 
             EditorItem::NumberField { label, target } => {
@@ -911,7 +911,7 @@ impl ConfigEditorScreen {
                 let has_active = self.group_has_any_enabled(*group);
                 let chevron = if expanded { "▼" } else { "▶" };
                 let status = if has_active { "active" } else { "—" };
-                let ss = if has_active { Style::default().fg(theme::OK) } else { Style::default().fg(theme::DIM) };
+                let ss = if has_active { Style::default().fg(theme::ok()) } else { Style::default().fg(theme::dim()) };
                 Line::from(vec![
                     arrow,
                     Span::styled(format!("{chevron} {:<20}", group.label()), fs),

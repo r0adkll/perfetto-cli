@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Runtime theme switching via [opaline](https://github.com/hyperb1iss/opaline) theme engine — 39 built-in themes plus custom user themes from `~/.config/perfetto-cli/themes/`
+- Default "Perfetto" theme using Google's official dark-mode brand colors from ui.perfetto.dev
+- Theme picker screen (`t` from sessions list) with searchable two-pane layout, live preview on navigation, and color swatches
+- Theme selection persisted across sessions via `settings` table
 - Global config management screen (`g` from sessions list) — create, edit, duplicate, delete reusable trace configs
 - Config import via `Ctrl-I` on the config list — full-screen multiline text editor (ratatui-textarea) for pasting/typing raw textproto, saved with a user-provided name
 - Config export via `Ctrl-E` on both the config list and config editor — copies the generated textproto to the system clipboard

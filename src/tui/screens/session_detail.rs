@@ -336,7 +336,7 @@ impl SessionDetailScreen {
             Span::styled(
                 self.session.name.clone(),
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -499,7 +499,7 @@ impl SessionDetailScreen {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     format!("  ✗ {err}"),
-                    Style::default().fg(theme::ERR),
+                    Style::default().fg(theme::err()),
                 )))
                 .block(traces_block),
                 traces_area,
@@ -558,7 +558,7 @@ impl SessionDetailScreen {
                         spans.push(Span::raw("  "));
                         spans.push(Span::styled(
                             format!("#{}", t.tags.join(" #")),
-                            Style::default().fg(theme::ACCENT),
+                            Style::default().fg(theme::accent()),
                         ));
                     }
                     ListItem::new(Line::from(spans))
@@ -566,7 +566,7 @@ impl SessionDetailScreen {
                 .collect();
             let list = List::new(items)
                 .block(traces_block)
-                .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+                .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
                 .highlight_symbol("▶ ");
             frame.render_stateful_widget(list, traces_area, &mut self.list_state);
         }
@@ -575,7 +575,7 @@ impl SessionDetailScreen {
             Mode::Rename { buffer } => Line::from(vec![
                 Span::styled(" rename › ", theme::title()),
                 Span::raw(buffer.clone()),
-                Span::styled("█", Style::default().fg(theme::ACCENT)),
+                Span::styled("█", Style::default().fg(theme::accent())),
                 Span::styled(TRACE_EXT, theme::hint()),
                 Span::styled(
                     "   [Enter] save  [Esc] cancel  [Alt-⌫] word  [Ctrl-U] clear",
@@ -585,7 +585,7 @@ impl SessionDetailScreen {
             Mode::EditTags { buffer } => Line::from(vec![
                 Span::styled(" tags › ", theme::title()),
                 Span::raw(buffer.clone()),
-                Span::styled("█", Style::default().fg(theme::ACCENT)),
+                Span::styled("█", Style::default().fg(theme::accent())),
                 Span::styled(
                     "   comma-separated  [Enter] save  [Esc] cancel",
                     theme::hint(),
@@ -599,7 +599,7 @@ impl SessionDetailScreen {
                 Line::from(vec![
                     Span::styled(
                         format!(" ⚠ delete \"{name}\" and its file? "),
-                        Style::default().fg(theme::WARN),
+                        Style::default().fg(theme::warn()),
                     ),
                     Span::styled("[y]", theme::title()),
                     Span::raw(" yes  "),
@@ -611,7 +611,7 @@ impl SessionDetailScreen {
                 if let Some(msg) = self.status.get() {
                     Line::from(Span::styled(
                         format!(" ✓ {msg}"),
-                        Style::default().fg(theme::OK),
+                        Style::default().fg(theme::ok()),
                     ))
                 } else {
                     Line::from(vec![
