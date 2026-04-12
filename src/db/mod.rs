@@ -28,6 +28,30 @@ impl Database {
         Ok(())
     }
 
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        use rusqlite::{OptionalExtension, params};
+        let conn = self.lock();
+        let val = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(val)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        use rusqlite::params;
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().expect("db mutex poisoned")
     }

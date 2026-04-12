@@ -213,7 +213,16 @@ impl DevicePickerScreen {
             KeyCode::Enter => {
                 if let Some(entry) = self.selected_entry() {
                     if entry.state.selectable() {
-                        return PickerAction::Selected(entry.serial.clone());
+                        let label = entry
+                            .nickname
+                            .clone()
+                            .unwrap_or_else(|| {
+                                entry.model.clone().unwrap_or_else(|| entry.serial.clone())
+                            });
+                        return PickerAction::Selected {
+                            serial: entry.serial.clone(),
+                            label,
+                        };
                     }
                 }
                 PickerAction::None
@@ -516,7 +525,7 @@ impl DevicePickerScreen {
 pub enum PickerAction {
     None,
     Back,
-    Selected(String),
+    Selected { serial: String, label: String },
 }
 
 pub(crate) async fn load_entries(db: Database) -> Result<Vec<DeviceEntry>> {

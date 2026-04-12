@@ -16,9 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Process/thread association auto-enabled as a dependency for CPU scheduling, LMK, and high-freq memory probes
 - `ftrace/print` auto-added when any atrace category is enabled
 - README rewritten with concise emoji feature list
-- Device picker now shows a two-pane detail view with device info
+- Device picker now shows a two-pane detail view with hardware specs, Android version, perfetto version, and installed apps
+- Active device displayed in the app header (right-aligned inside the chrome box)
 
 ### Added
+- Active device auto-selected on startup from last-used (persisted) or first known device
+- `settings` key-value table in SQLite for persisting app-level state
+- `query_device_info` adb helper fetches manufacturer, OS version/codename, CPU, RAM, storage, perfetto version, and installed packages
 - Dynamic terminal tab/window title updates per screen
 - CPU coarse usage polling probe (`linux.sys_stats` with `stat_period_ms`)
 - CPU frequency/idle polling probe (`cpufreq_period_ms`)

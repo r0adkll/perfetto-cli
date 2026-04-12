@@ -2,12 +2,16 @@ use std::path::Path;
 
 use anyhow::Result;
 use crossterm::execute;
-use crossterm::terminal::SetTitle;
 use crossterm::event::{KeyEvent, KeyEventKind};
+use crossterm::terminal::SetTitle;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Paths;
 use crate::db::Database;
+use crate::tui::theme;
 use crate::tui::Tui;
 use crate::tui::event::{self, AppEvent};
 use crate::tui::screens::capture::{CaptureAction, CaptureScreen};
@@ -35,11 +39,31 @@ pub struct App {
     sessions_list: SessionsListScreen,
     event_tx: Option<UnboundedSender<AppEvent>>,
     ui_server: Option<UiServer>,
+    /// (serial, display label) for the device shown in the header.
+    active_device: Option<(String, String)>,
 }
 
 impl App {
     pub fn new(db: Database, paths: Paths) -> Self {
         let sessions_list = SessionsListScreen::new(&db);
+
+        // Restore persisted active device, falling back to the most-recently-seen.
+        let active_device = {
+            let known = db.list_known_devices().unwrap_or_default();
+            let saved = db.get_setting("active_device").ok().flatten();
+            let rec = saved
+                .as_deref()
+                .and_then(|s| known.iter().find(|d| d.serial == s))
+                .or_else(|| known.first());
+            rec.map(|d| {
+                let label = d
+                    .nickname
+                    .clone()
+                    .unwrap_or_else(|| d.model.clone().unwrap_or_else(|| d.serial.clone()));
+                (d.serial.clone(), label)
+            })
+        };
+
         Self {
             db,
             paths,
@@ -48,6 +72,7 @@ impl App {
             sessions_list,
             event_tx: None,
             ui_server: None,
+            active_device,
         }
     }
 
@@ -101,6 +126,28 @@ impl App {
             Screen::SessionDetail(d) => d.render(frame),
             Screen::ConfigEditor(e) => e.render(frame),
             Screen::Capture(c) => c.render(frame),
+        }
+
+        // Render active device label inside the header box, right-aligned on
+        // the subtitle row (row 2 of the 5-row header).
+        if let Some((_, label)) = &self.active_device {
+            let area = frame.area();
+            let device_line = Line::from(vec![
+                Span::styled("📱 ", theme::hint()),
+                Span::styled(
+                    label.as_str(),
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+            ]);
+            let w = device_line.width() as u16;
+            // Only render if there's room alongside the subtitle text.
+            if w + 30 < area.width {
+                let x = area.width - w - 1; // inside right border
+                frame.render_widget(device_line, Rect::new(x, 2, w, 1));
+            }
         }
     }
 
@@ -225,8 +272,10 @@ impl App {
             },
             Screen::DevicePicker(p) => match p.on_key(key) {
                 PickerAction::Back => self.return_to_sessions_list(),
-                PickerAction::Selected(serial) => {
+                PickerAction::Selected { serial, label } => {
                     tracing::info!(serial, "device selected");
+                    let _ = self.db.set_setting("active_device", &serial);
+                    self.active_device = Some((serial, label));
                     self.return_to_sessions_list();
                 }
                 PickerAction::None => {}

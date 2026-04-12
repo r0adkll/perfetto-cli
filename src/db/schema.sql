@@ -40,5 +40,10 @@ CREATE TABLE IF NOT EXISTS trace_tags (
     FOREIGN KEY (tag_name) REFERENCES tags(name) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
