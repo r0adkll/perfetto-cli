@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auto-dismissing status messages (3-second timeout via `theme::Status`) across all screens
 - `custom_textproto` field on `TraceConfig` for imported configs — `textproto::build` returns it verbatim
 - Config editor hides structured probe sections for imported custom configs, showing only session-level behavioral toggles
+- Perfetto UI startup commands support — 14-command catalog (tracks, debug tracks, workspaces, queries, annotations)
+- Command set management screen (`s` from sessions list) — create, edit, delete reusable named sets
+- Command set editor with two-pane layout: command list + catalog picker, inline arg editing, `Shift-J/K` reorder
+- Command set selection step in the new session wizard — pick "None" or a saved set
+- Startup commands passed to ui.perfetto.dev via `&startupCommands=` URL parameter on trace open
+- Scrollable textproto preview on session detail screen (`[`/`]` keys)
+- Startup commands preview box on session detail screen (below textproto, auto-sized, only when commands are set)
 
 ### Changed
 - `EditorContext` enum tracks whether the config editor is editing a session config, a saved config, or creating a new one — save routes to the correct DB table

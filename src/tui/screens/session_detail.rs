@@ -35,6 +35,7 @@ pub struct SessionDetailScreen {
     status: theme::Status,
     mode: Mode,
     tag_filter: Option<String>,
+    preview_scroll: u16,
 }
 
 enum Mode {
@@ -63,6 +64,7 @@ impl SessionDetailScreen {
             status: theme::Status::default(),
             mode: Mode::Browse,
             tag_filter: None,
+            preview_scroll: 0,
         };
         screen.reload(db);
         screen
@@ -195,6 +197,14 @@ impl SessionDetailScreen {
                 } else {
                     DetailAction::None
                 }
+            }
+            KeyCode::Char('[') => {
+                self.preview_scroll = self.preview_scroll.saturating_sub(1);
+                DetailAction::None
+            }
+            KeyCode::Char(']') => {
+                self.preview_scroll = self.preview_scroll.saturating_add(1);
+                DetailAction::None
             }
             _ => DetailAction::None,
         }
@@ -357,6 +367,20 @@ impl SessionDetailScreen {
         let traces_area = left_rows[1];
 
         if let Some(right_area) = right_area {
+            let has_commands = !self.session.config.startup_commands.is_empty();
+            let (proto_area, cmd_area) = if has_commands {
+                let rows = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(5), Constraint::Length(
+                        // 2 for border + 1 per command, capped at 8
+                        (self.session.config.startup_commands.len() as u16 + 2).min(8),
+                    )])
+                    .split(right_area);
+                (rows[0], Some(rows[1]))
+            } else {
+                (right_area, None)
+            };
+
             let textproto = textproto::build(&self.session.config);
             let preview = Paragraph::new(textproto)
                 .block(
@@ -364,8 +388,58 @@ impl SessionDetailScreen {
                         .borders(Borders::ALL)
                         .title(" Config (textproto) "),
                 )
+                .scroll((self.preview_scroll, 0))
                 .wrap(Wrap { trim: false });
-            frame.render_widget(preview, right_area);
+            frame.render_widget(preview, proto_area);
+
+            if let Some(cmd_area) = cmd_area {
+                let lines: Vec<Line> = self
+                    .session
+                    .config
+                    .startup_commands
+                    .iter()
+                    .map(|cmd| {
+                        let short = cmd
+                            .id
+                            .strip_prefix("dev.perfetto.")
+                            .unwrap_or(&cmd.id);
+                        let args = if cmd.args.is_empty() || cmd.args.iter().all(|a| a.is_empty()) {
+                            String::new()
+                        } else {
+                            format!(
+                                "  ({})",
+                                cmd.args
+                                    .iter()
+                                    .filter(|a| !a.is_empty())
+                                    .map(|a| if a.len() > 25 {
+                                        format!("{}…", &a[..25])
+                                    } else {
+                                        a.clone()
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        };
+                        Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(
+                                short.to_string(),
+                                Style::default().add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(args, theme::hint()),
+                        ])
+                    })
+                    .collect();
+                let cmd_block = Paragraph::new(lines).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(
+                            " Startup Commands ({}) ",
+                            self.session.config.startup_commands.len()
+                        )),
+                );
+                frame.render_widget(cmd_block, cmd_area);
+            }
         }
 
         let metadata_lines = vec![
