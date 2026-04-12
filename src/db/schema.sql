@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS configs (
     updated_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS command_sets (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL UNIQUE,
+    commands_json TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

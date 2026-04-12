@@ -1,3 +1,4 @@
+pub mod command_sets;
 pub mod configs;
 pub mod devices;
 pub mod sessions;

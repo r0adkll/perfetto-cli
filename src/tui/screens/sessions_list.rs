@@ -23,6 +23,7 @@ pub enum SessionsAction {
     Quit,
     OpenDevicePicker,
     OpenConfigList,
+    OpenCommandSets,
     NewSession,
     OpenSession(i64),
 }
@@ -81,6 +82,7 @@ impl SessionsListScreen {
             KeyCode::Char('q') | KeyCode::Esc => SessionsAction::Quit,
             KeyCode::Char('d') => SessionsAction::OpenDevicePicker,
             KeyCode::Char('g') => SessionsAction::OpenConfigList,
+            KeyCode::Char('s') => SessionsAction::OpenCommandSets,
             KeyCode::Char('n') => SessionsAction::NewSession,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.move_selection(1);
@@ -228,7 +230,9 @@ impl SessionsListScreen {
                 Span::styled("[d]", theme::title()),
                 Span::raw(" devices  "),
                 Span::styled("[g]", theme::title()),
-                Span::raw(" configs"),
+                Span::raw(" configs  "),
+                Span::styled("[s]", theme::title()),
+                Span::raw(" commands"),
             ])
         };
         frame.render_widget(Paragraph::new(footer), chunks[2]);

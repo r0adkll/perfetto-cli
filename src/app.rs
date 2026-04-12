@@ -15,6 +15,8 @@ use crate::tui::theme;
 use crate::tui::Tui;
 use crate::tui::event::{self, AppEvent};
 use crate::tui::screens::capture::{CaptureAction, CaptureScreen};
+use crate::tui::screens::command_set_editor::{CmdEditorAction, CommandSetEditorScreen};
+use crate::tui::screens::command_set_list::{CommandSetListAction, CommandSetListScreen};
 use crate::tui::screens::config_editor::{ConfigEditorScreen, EditorAction};
 use crate::tui::screens::config_import::{ConfigImportScreen, ImportAction};
 use crate::tui::screens::config_list::{ConfigListAction, ConfigListScreen};
@@ -35,6 +37,13 @@ enum EditorContext {
     NewConfig(String),
 }
 
+/// Tracks what opened the command set editor.
+#[derive(Debug, Clone)]
+enum CmdSetEditorContext {
+    Existing(i64),
+    New(String),
+}
+
 enum Screen {
     SessionsList,
     DevicePicker(DevicePickerScreen),
@@ -43,6 +52,8 @@ enum Screen {
     ConfigEditor(ConfigEditorScreen),
     ConfigList(ConfigListScreen),
     ConfigImport(ConfigImportScreen<'static>),
+    CommandSetList(CommandSetListScreen),
+    CommandSetEditor(CommandSetEditorScreen),
     Capture(CaptureScreen),
 }
 
@@ -58,6 +69,8 @@ pub struct App {
     active_device: Option<(String, String)>,
     /// What opened the config editor — controls where save routes to.
     editor_context: Option<EditorContext>,
+    /// What opened the command set editor.
+    cmd_editor_context: Option<CmdSetEditorContext>,
 }
 
 impl App {
@@ -91,10 +104,11 @@ impl App {
             ui_server: None,
             active_device,
             editor_context: None,
+            cmd_editor_context: None,
         }
     }
 
-    fn open_trace(&mut self, trace: &Path) -> Result<String> {
+    fn open_trace(&mut self, trace: &Path, commands: &[crate::perfetto::commands::StartupCommand]) -> Result<String> {
         // Reap a previous server whose thread has already exited (trace
         // delivered + loop broken). Joining guarantees the :9001 listener is
         // fully released before we try to rebind it.
@@ -108,7 +122,7 @@ impl App {
             self.ui_server = Some(UiServer::start()?);
         }
         let server = self.ui_server.as_ref().expect("ui_server just initialized");
-        server.serve(trace)
+        server.serve(trace, commands)
     }
 
     pub async fn run(mut self, terminal: &mut Tui) -> Result<()> {
@@ -135,6 +149,8 @@ impl App {
             Screen::ConfigEditor(_) => "Perfetto CLI — Config".to_string(),
             Screen::ConfigList(_) => "Perfetto CLI — Configurations".to_string(),
             Screen::ConfigImport(_) => "Perfetto CLI — Import Config".to_string(),
+            Screen::CommandSetList(_) => "Perfetto CLI — Startup Commands".to_string(),
+            Screen::CommandSetEditor(_) => "Perfetto CLI — Edit Commands".to_string(),
             Screen::Capture(_) => "Perfetto CLI — Capturing".to_string(),
         };
         let _ = execute!(std::io::stdout(), SetTitle(title));
@@ -147,6 +163,8 @@ impl App {
             Screen::ConfigEditor(e) => e.render(frame),
             Screen::ConfigList(cl) => cl.render(frame),
             Screen::ConfigImport(ci) => ci.render(frame),
+            Screen::CommandSetList(cl) => cl.render(frame),
+            Screen::CommandSetEditor(ce) => ce.render(frame),
             Screen::Capture(c) => c.render(frame),
         }
 
@@ -199,27 +217,26 @@ impl App {
             AppEvent::CaptureDone(result) => {
                 // Pull out everything we need up front so we can release the
                 // borrow on `self.screen` before touching other state.
-                let (session_id, should_auto_open, trace_for_auto_open) = {
+                let (session_id, should_auto_open, trace_for_auto_open, startup_cmds) = {
                     let Screen::Capture(c) = &self.screen else {
                         return;
                     };
                     let id = c.session_id();
-                    // Only auto-open on a clean completion — cancelled runs
-                    // stay "quiet" so you can look at what happened first.
-                    let (auto, path) = match &result {
-                        Ok(captured) if !captured.cancelled => {
-                            let session_auto_open = self
-                                .db
-                                .list_sessions()
-                                .ok()
-                                .and_then(|mut list| list.drain(..).find(|s| s.id == Some(id)))
-                                .map(|s| s.config.auto_open)
-                                .unwrap_or(true);
-                            (session_auto_open, Some(captured.trace_path.clone()))
+                    let session = self
+                        .db
+                        .list_sessions()
+                        .ok()
+                        .and_then(|mut list| list.drain(..).find(|s| s.id == Some(id)));
+                    let (auto, path) = match (&result, &session) {
+                        (Ok(captured), Some(s)) if !captured.cancelled => {
+                            (s.config.auto_open, Some(captured.trace_path.clone()))
                         }
                         _ => (false, None),
                     };
-                    (id, auto, path)
+                    let cmds = session
+                        .map(|s| s.config.startup_commands)
+                        .unwrap_or_default();
+                    (id, auto, path, cmds)
                 };
 
                 if let Ok(captured) = &result {
@@ -236,7 +253,7 @@ impl App {
 
                 let auto_open_note = if should_auto_open {
                     match trace_for_auto_open.as_deref() {
-                        Some(path) => match self.open_trace(path) {
+                        Some(path) => match self.open_trace(path, &startup_cmds) {
                             Ok(_) => {
                                 Some((crate::perfetto::capture::LogLevel::Ok, "opened in browser".to_string()))
                             }
@@ -273,6 +290,10 @@ impl App {
                 }
                 SessionsAction::OpenConfigList => {
                     self.screen = Screen::ConfigList(ConfigListScreen::new(self.db.clone()));
+                }
+                SessionsAction::OpenCommandSets => {
+                    self.screen =
+                        Screen::CommandSetList(CommandSetListScreen::new(self.db.clone()));
                 }
                 SessionsAction::NewSession => {
                     let tx = self.require_tx();
@@ -342,9 +363,8 @@ impl App {
                     self.screen = Screen::Capture(CaptureScreen::new(&session, tx));
                 }
                 DetailAction::OpenTrace(path) => {
-                    // `d` is unused after this point, so NLL releases the
-                    // borrow and we can reborrow self.screen below.
-                    let outcome = self.open_trace(&path);
+                    let cmds = d.session().config.startup_commands.clone();
+                    let outcome = self.open_trace(&path, &cmds);
                     if let Screen::SessionDetail(d) = &mut self.screen {
                         match outcome {
                             Ok(_) => d.set_status("opened in browser".into()),
@@ -411,6 +431,47 @@ impl App {
                         Screen::ConfigList(ConfigListScreen::new(self.db.clone()));
                 }
                 ImportAction::None => {}
+            },
+            Screen::CommandSetList(cl) => match cl.on_key(key) {
+                CommandSetListAction::Back => self.return_to_sessions_list(),
+                CommandSetListAction::Edit(id, name, cmds) => {
+                    self.cmd_editor_context = Some(CmdSetEditorContext::Existing(id));
+                    self.screen = Screen::CommandSetEditor(
+                        CommandSetEditorScreen::new(name, cmds),
+                    );
+                }
+                CommandSetListAction::CreateNew(name) => {
+                    self.cmd_editor_context = Some(CmdSetEditorContext::New(name.clone()));
+                    self.screen = Screen::CommandSetEditor(
+                        CommandSetEditorScreen::new(name, Vec::new()),
+                    );
+                }
+                CommandSetListAction::None => {}
+            },
+            Screen::CommandSetEditor(ce) => match ce.on_key(key) {
+                CmdEditorAction::Cancel => {
+                    self.cmd_editor_context = None;
+                    self.screen =
+                        Screen::CommandSetList(CommandSetListScreen::new(self.db.clone()));
+                }
+                CmdEditorAction::Save(cmds) => {
+                    match self.cmd_editor_context.take() {
+                        Some(CmdSetEditorContext::Existing(id)) => {
+                            if let Err(e) = self.db.update_command_set(id, &cmds) {
+                                tracing::error!(?e, "save command set failed");
+                            }
+                        }
+                        Some(CmdSetEditorContext::New(name)) => {
+                            if let Err(e) = self.db.create_command_set(&name, &cmds) {
+                                tracing::error!(?e, "create command set failed");
+                            }
+                        }
+                        None => {}
+                    }
+                    self.screen =
+                        Screen::CommandSetList(CommandSetListScreen::new(self.db.clone()));
+                }
+                CmdEditorAction::None => {}
             },
         }
     }

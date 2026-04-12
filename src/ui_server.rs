@@ -7,6 +7,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
+use crate::perfetto::commands::{self, StartupCommand};
+
 /// Short-lived local HTTP server that hands a `.pftrace` over to ui.perfetto.dev.
 ///
 /// Binds `127.0.0.1:9001`, answers CORS preflight + one GET of the loaded
@@ -65,8 +67,14 @@ impl UiServer {
     }
 
     /// Register the trace file to serve and return the ui.perfetto.dev URL
-    /// that loads it.
-    pub fn serve(&self, trace_path: &Path) -> Result<String> {
+    /// that loads it. If `startup_commands` is non-empty, they're serialized
+    /// to JSON and appended as the `startupCommands` URL parameter so the
+    /// Perfetto UI executes them when the trace loads.
+    pub fn serve(
+        &self,
+        trace_path: &Path,
+        startup_commands: &[StartupCommand],
+    ) -> Result<String> {
         let canonical = trace_path
             .canonicalize()
             .unwrap_or_else(|_| trace_path.to_path_buf());
@@ -76,8 +84,19 @@ impl UiServer {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "trace.pftrace".into());
+
+        let commands_param = if startup_commands.is_empty() {
+            String::new()
+        } else {
+            let json = commands::serialize_commands(startup_commands);
+            format!(
+                "&startupCommands={}",
+                urlencoding::encode(&json)
+            )
+        };
+
         let url = format!(
-            "{UI_ORIGIN}/#!/?url=http://127.0.0.1:9001/{filename}&referrer=perfetto-cli"
+            "{UI_ORIGIN}/#!/?url=http://127.0.0.1:9001/{filename}&referrer=perfetto-cli{commands_param}"
         );
 
         webbrowser::open(&url).context("failed to launch browser")?;

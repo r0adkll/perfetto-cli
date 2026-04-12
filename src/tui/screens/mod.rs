@@ -1,4 +1,6 @@
 pub mod capture;
+pub mod command_set_editor;
+pub mod command_set_list;
 pub mod config_editor;
 pub mod config_import;
 pub mod config_list;

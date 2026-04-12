@@ -11,6 +11,7 @@ use crate::adb;
 use crate::adb::DeviceInfo;
 use crate::config::Paths;
 use crate::db::Database;
+use crate::db::command_sets::SavedCommandSet;
 use crate::db::configs::SavedConfig;
 use crate::perfetto::TraceConfig;
 use crate::session::Session;
@@ -27,6 +28,7 @@ enum Focus {
     Suggestions,
     Device,
     Config,
+    Commands,
     Submit,
 }
 
@@ -37,7 +39,8 @@ impl Focus {
             Focus::Package => Focus::Suggestions,
             Focus::Suggestions => Focus::Device,
             Focus::Device => Focus::Config,
-            Focus::Config => Focus::Submit,
+            Focus::Config => Focus::Commands,
+            Focus::Commands => Focus::Submit,
             Focus::Submit => Focus::Name,
         }
     }
@@ -48,7 +51,8 @@ impl Focus {
             Focus::Suggestions => Focus::Package,
             Focus::Device => Focus::Suggestions,
             Focus::Config => Focus::Device,
-            Focus::Submit => Focus::Config,
+            Focus::Commands => Focus::Config,
+            Focus::Submit => Focus::Commands,
         }
     }
 }
@@ -80,6 +84,9 @@ pub struct NewSessionScreen {
     /// Saved configs available for selection. Index 0 = "Default", rest from DB.
     saved_configs: Vec<SavedConfig>,
     config_state: ListState,
+    /// Saved command sets. Index 0 = "None", rest from DB.
+    saved_command_sets: Vec<SavedCommandSet>,
+    command_set_state: ListState,
     /// Info about the currently-highlighted online device.
     device_info: Option<DeviceInfo>,
     device_info_serial: Option<String>,
@@ -100,7 +107,10 @@ impl NewSessionScreen {
         let recent_packages = db.list_recent_packages().unwrap_or_default();
         let saved_configs = db.list_configs().unwrap_or_default();
         let mut config_state = ListState::default();
-        config_state.select(Some(0)); // "Default" is pre-selected
+        config_state.select(Some(0));
+        let saved_command_sets = db.list_command_sets().unwrap_or_default();
+        let mut command_set_state = ListState::default();
+        command_set_state.select(Some(0)); // "None" is pre-selected
         let mut screen = Self {
             name: String::new(),
             package: String::new(),
@@ -117,6 +127,8 @@ impl NewSessionScreen {
             loading_packages: false,
             saved_configs,
             config_state,
+            saved_command_sets,
+            command_set_state,
             device_info: None,
             device_info_serial: None,
             error: None,
@@ -262,6 +274,7 @@ impl NewSessionScreen {
             Focus::Suggestions => self.handle_suggestions_key(key),
             Focus::Device => self.handle_device_key(key),
             Focus::Config => self.handle_config_key(key),
+            Focus::Commands => self.handle_commands_key(key),
             Focus::Submit => match key.code {
                 KeyCode::Enter => self.try_create(),
                 _ => WizardAction::None,
@@ -430,6 +443,38 @@ impl NewSessionScreen {
         WizardAction::None
     }
 
+    fn handle_commands_key(&mut self, key: KeyEvent) -> WizardAction {
+        let total = 1 + self.saved_command_sets.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                let cur = self.command_set_state.selected().unwrap_or(0);
+                self.command_set_state.select(Some((cur + 1) % total));
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let cur = self.command_set_state.selected().unwrap_or(0);
+                self.command_set_state
+                    .select(Some((cur + total - 1) % total));
+            }
+            KeyCode::Enter => {
+                self.focus = Focus::Submit;
+            }
+            _ => {}
+        }
+        WizardAction::None
+    }
+
+    /// Returns the selected startup commands. Index 0 = None, 1+ = saved sets.
+    fn selected_startup_commands(&self) -> Vec<crate::perfetto::commands::StartupCommand> {
+        match self.command_set_state.selected().unwrap_or(0) {
+            0 => Vec::new(),
+            i => self
+                .saved_command_sets
+                .get(i - 1)
+                .map(|s| s.commands.clone())
+                .unwrap_or_default(),
+        }
+    }
+
     /// Returns the TraceConfig for the currently selected config option.
     /// Index 0 = Default, 1+ = saved configs from DB.
     fn selected_trace_config(&self) -> TraceConfig {
@@ -485,7 +530,11 @@ impl NewSessionScreen {
             name: name.to_string(),
             package_name: package.to_string(),
             device_serial: serial,
-            config: self.selected_trace_config(),
+            config: {
+                let mut cfg = self.selected_trace_config();
+                cfg.startup_commands = self.selected_startup_commands();
+                cfg
+            },
             folder_path: folder,
             created_at,
             notes: None,
@@ -535,6 +584,7 @@ impl NewSessionScreen {
                 Constraint::Length(3),
                 Constraint::Length(6),
                 Constraint::Length(5),
+                Constraint::Length(5),
                 Constraint::Length(3),
                 Constraint::Min(0),
             ])
@@ -556,6 +606,7 @@ impl NewSessionScreen {
         );
         self.render_suggestions(frame, form[2]);
         self.render_config_picker(frame, form[3]);
+        self.render_command_set_picker(frame, form[4]);
 
         let submit_text = if self.focus == Focus::Submit {
             " ▶ Create session (Enter) "
@@ -578,7 +629,7 @@ impl NewSessionScreen {
                 .borders(Borders::ALL)
                 .border_style(focus_style(self.focus == Focus::Submit)),
         );
-        frame.render_widget(submit, form[4]);
+        frame.render_widget(submit, form[5]);
 
         // --- Right pane: device list (top) + device info (bottom) ---
         let right = Layout::default()
@@ -827,6 +878,40 @@ impl NewSessionScreen {
             .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(list, area, &mut self.config_state);
+    }
+
+    fn render_command_set_picker(&mut self, frame: &mut Frame, area: Rect) {
+        let focused = self.focus == Focus::Commands;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Startup Commands ")
+            .border_style(focus_style(focused));
+
+        let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("None", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled("no startup commands", theme::hint()),
+        ]))];
+
+        for s in &self.saved_command_sets {
+            let count = s.commands.len();
+            items.push(ListItem::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    s.name.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(format!("{count} cmd(s)"), theme::hint()),
+            ])));
+        }
+
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+            .highlight_symbol("▶ ");
+        frame.render_stateful_widget(list, area, &mut self.command_set_state);
     }
 
     fn render_text_field(

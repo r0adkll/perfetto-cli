@@ -2,6 +2,8 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use super::commands::StartupCommand;
+
 /// Every known atrace category: (tag, human-readable description).
 /// Sourced from `adb shell atrace --list_categories` on a recent device.
 pub const ATRACE_CATEGORIES: &[(&str, &str)] = &[
@@ -131,6 +133,10 @@ pub struct TraceConfig {
     #[serde(default)]
     pub atrace_apps: Vec<String>,
 
+    // --- startup commands (UI automation, not part of the textproto) ---
+    #[serde(default)]
+    pub startup_commands: Vec<StartupCommand>,
+
     // --- raw textproto override (for imported configs) ---
     // When set, `textproto::build` returns this verbatim instead of
     // generating from the structured fields. Used for imported configs
@@ -205,6 +211,7 @@ impl Default for TraceConfig {
             launch_activity: None,
             atrace_categories: default_atrace_categories(),
             atrace_apps: Vec::new(),
+            startup_commands: Vec::new(),
             custom_textproto: None,
             cpu: CpuProbe::default(),
             gpu: GpuProbe::default(),
