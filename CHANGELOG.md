@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Global config management screen (`g` from sessions list) — create, edit, duplicate, delete reusable trace configs
+- Config import via `Ctrl-I` on the config list — full-screen multiline text editor (ratatui-textarea) for pasting/typing raw textproto, saved with a user-provided name
+- Config export via `Ctrl-E` on both the config list and config editor — copies the generated textproto to the system clipboard
+- Config selection step in the new session wizard — pick from saved configs or "Default" when creating a session
+- Split-pane new session wizard — form fields on the left (65%), device list + device info on the right (35%)
+- Device info panel in the new session wizard showing hardware specs for the selected device
+- Package suggestions refresh when switching between devices in the wizard
+- Auto-dismissing status messages (3-second timeout via `theme::Status`) across all screens
+- `custom_textproto` field on `TraceConfig` for imported configs — `textproto::build` returns it verbatim
+- Config editor hides structured probe sections for imported custom configs, showing only session-level behavioral toggles
+
+### Changed
+- `EditorContext` enum tracks whether the config editor is editing a session config, a saved config, or creating a new one — save routes to the correct DB table
+- Config editor footer shows `[Ctrl-E] export` hint
+- Status messages no longer block the command hints — they auto-expire instead of requiring a keypress to dismiss
+
 ## [0.2.0] - 2026-04-12
 
 ### Changed

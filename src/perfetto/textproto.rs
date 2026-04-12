@@ -9,6 +9,12 @@ use super::config::TraceConfig;
 /// contribute ftrace events, `linux.sys_stats` fields, and standalone data
 /// source blocks. Everything merges via `BTreeSet` for dedup.
 pub fn build(config: &TraceConfig) -> String {
+    // Imported configs store verbatim textproto that can't be round-tripped
+    // through the structured model. Return it as-is.
+    if let Some(custom) = &config.custom_textproto {
+        return custom.clone();
+    }
+
     let mut ftrace_evts: BTreeSet<&str> = BTreeSet::new();
     let mut sys_stats_fields: Vec<String> = Vec::new();
     let mut extra_blocks: Vec<String> = Vec::new();

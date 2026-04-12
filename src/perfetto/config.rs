@@ -131,6 +131,13 @@ pub struct TraceConfig {
     #[serde(default)]
     pub atrace_apps: Vec<String>,
 
+    // --- raw textproto override (for imported configs) ---
+    // When set, `textproto::build` returns this verbatim instead of
+    // generating from the structured fields. Used for imported configs
+    // that can't be round-tripped through the structured model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_textproto: Option<String>,
+
     // --- probe groups ---
     #[serde(default)]
     pub cpu: CpuProbe,
@@ -198,6 +205,7 @@ impl Default for TraceConfig {
             launch_activity: None,
             atrace_categories: default_atrace_categories(),
             atrace_apps: Vec::new(),
+            custom_textproto: None,
             cpu: CpuProbe::default(),
             gpu: GpuProbe::default(),
             power: PowerProbe::default(),

@@ -184,6 +184,7 @@ enum TextTarget {
 // ---------------------------------------------------------------------------
 
 pub struct ConfigEditorScreen {
+    #[allow(dead_code)]
     session_id: Option<i64>,
     session_name: String,
     config: TraceConfig,
@@ -193,6 +194,7 @@ pub struct ConfigEditorScreen {
     scroll_offset: usize,
     preview_scroll: u16,
     error: Option<String>,
+    status: theme::Status,
     editing: Option<String>,
 }
 
@@ -214,12 +216,14 @@ impl ConfigEditorScreen {
             scroll_offset: 0,
             preview_scroll: 0,
             error: None,
+            status: theme::Status::default(),
             editing: None,
         };
         screen.rebuild_items();
         screen
     }
 
+    #[allow(dead_code)]
     pub fn session_id(&self) -> Option<i64> {
         self.session_id
     }
@@ -230,17 +234,12 @@ impl ConfigEditorScreen {
 
     fn rebuild_items(&mut self) {
         self.items.clear();
+        let is_custom = self.config.custom_textproto.is_some();
 
-        self.items.push(EditorItem::SectionHeader("── Recording ──"));
-        self.items.push(EditorItem::NumberField {
-            label: "Duration (ms)",
-            target: NumberTarget::Duration,
-        });
-        self.items.push(EditorItem::NumberField {
-            label: "Buffer (KB)",
-            target: NumberTarget::Buffer,
-        });
-        self.items.push(EditorItem::CycleField { label: "Fill policy" });
+        // Behavioral toggles that DON'T map into the textproto — always shown
+        // regardless of whether the config is a custom import or structured.
+        self.items
+            .push(EditorItem::SectionHeader("── Session ──"));
         self.items.push(EditorItem::Toggle {
             label: "Cold start",
             desc: "force-stop + restart the app for a clean startup trace",
@@ -260,6 +259,30 @@ impl ConfigEditorScreen {
             label: "Launch activity",
             target: TextTarget::LaunchActivity,
         });
+
+        // Structured recording + probe sections are only shown when the
+        // config is NOT an imported custom textproto. Imported configs
+        // can't be round-tripped through the structured model, so editing
+        // these fields would have no effect — hiding them avoids confusion.
+        if is_custom {
+            self.items.push(EditorItem::SectionHeader(
+                "── Custom textproto (imported) ── see preview →",
+            ));
+            self.clamp_cursor();
+            return;
+        }
+
+        self.items
+            .push(EditorItem::SectionHeader("── Recording ──"));
+        self.items.push(EditorItem::NumberField {
+            label: "Duration (ms)",
+            target: NumberTarget::Duration,
+        });
+        self.items.push(EditorItem::NumberField {
+            label: "Buffer (KB)",
+            target: NumberTarget::Buffer,
+        });
+        self.items.push(EditorItem::CycleField { label: "Fill policy" });
 
         self.items.push(EditorItem::SectionHeader("── Probes ──"));
         for group in ProbeGroup::ALL {
@@ -381,7 +404,6 @@ impl ConfigEditorScreen {
         if key.kind != KeyEventKind::Press {
             return EditorAction::None;
         }
-
         if self.editing.is_some() {
             return self.handle_edit_key(key);
         }
@@ -390,6 +412,14 @@ impl ConfigEditorScreen {
             (KeyCode::Esc, _) => return EditorAction::Cancel,
             (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
                 return EditorAction::Save(self.config.clone());
+            }
+            (KeyCode::Char('e'), m) if m.contains(KeyModifiers::CONTROL) => {
+                let proto = textproto::build(&self.config);
+                match cli_clipboard::set_contents(proto) {
+                    Ok(_) => self.status.set("Textproto copied to clipboard".into()),
+                    Err(e) => self.error = Some(format!("clipboard: {e}")),
+                }
+                return EditorAction::None;
             }
             (KeyCode::Down | KeyCode::Char('j'), _) | (KeyCode::Tab, _) => {
                 self.move_cursor(1);
@@ -734,7 +764,7 @@ impl ConfigEditorScreen {
     // Render
     // -----------------------------------------------------------------------
 
-    pub fn render(&self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -759,38 +789,42 @@ impl ConfigEditorScreen {
         self.render_form(frame, cols[0]);
         self.render_preview(frame, cols[1]);
 
-        let footer = match &self.error {
-            Some(msg) => Line::from(Span::styled(
+        let footer = if let Some(msg) = &self.error {
+            Line::from(Span::styled(
                 format!(" ✗ {msg}"),
                 Style::default().fg(theme::ERR),
-            )),
-            None => {
-                if self.editing.is_some() {
-                    Line::from(vec![
-                        Span::styled(" [Enter]", theme::title()),
-                        Span::raw(" save  "),
-                        Span::styled("[Esc]", theme::title()),
-                        Span::raw(" cancel  "),
-                        Span::styled("[Alt-⌫]", theme::title()),
-                        Span::raw(" word  "),
-                        Span::styled("[Ctrl-U]", theme::title()),
-                        Span::raw(" clear"),
-                    ])
-                } else {
-                    Line::from(vec![
-                        Span::styled(" [↑/↓]", theme::title()),
-                        Span::raw(" move  "),
-                        Span::styled("[Space]", theme::title()),
-                        Span::raw(" toggle  "),
-                        Span::styled("[Enter]", theme::title()),
-                        Span::raw(" expand/edit  "),
-                        Span::styled("[Ctrl-S]", theme::title()),
-                        Span::raw(" save  "),
-                        Span::styled("[Esc]", theme::title()),
-                        Span::raw(" cancel"),
-                    ])
-                }
-            }
+            ))
+        } else if let Some(msg) = self.status.get() {
+            Line::from(Span::styled(
+                format!(" ✓ {msg}"),
+                Style::default().fg(theme::OK),
+            ))
+        } else if self.editing.is_some() {
+            Line::from(vec![
+                Span::styled(" [Enter]", theme::title()),
+                Span::raw(" save  "),
+                Span::styled("[Esc]", theme::title()),
+                Span::raw(" cancel  "),
+                Span::styled("[Alt-⌫]", theme::title()),
+                Span::raw(" word  "),
+                Span::styled("[Ctrl-U]", theme::title()),
+                Span::raw(" clear"),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(" [↑/↓]", theme::title()),
+                Span::raw(" move  "),
+                Span::styled("[Space]", theme::title()),
+                Span::raw(" toggle  "),
+                Span::styled("[Enter]", theme::title()),
+                Span::raw(" expand/edit  "),
+                Span::styled("[Ctrl-S]", theme::title()),
+                Span::raw(" save  "),
+                Span::styled("[Ctrl-E]", theme::title()),
+                Span::raw(" export  "),
+                Span::styled("[Esc]", theme::title()),
+                Span::raw(" cancel"),
+            ])
         };
         frame.render_widget(Paragraph::new(footer), rows[2]);
     }

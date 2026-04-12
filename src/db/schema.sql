@@ -40,6 +40,14 @@ CREATE TABLE IF NOT EXISTS trace_tags (
     FOREIGN KEY (tag_name) REFERENCES tags(name) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS configs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE,
+    config_json TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

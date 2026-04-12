@@ -32,7 +32,7 @@ pub struct SessionDetailScreen {
     visible: Vec<usize>,
     list_state: ListState,
     error: Option<String>,
-    status: Option<String>,
+    status: theme::Status,
     mode: Mode,
     tag_filter: Option<String>,
 }
@@ -60,7 +60,7 @@ impl SessionDetailScreen {
             visible: Vec::new(),
             list_state: ListState::default(),
             error: None,
-            status: None,
+            status: theme::Status::default(),
             mode: Mode::Browse,
             tag_filter: None,
         };
@@ -136,10 +136,6 @@ impl SessionDetailScreen {
         if key.kind != KeyEventKind::Press {
             return DetailAction::None;
         }
-        // Any key press dismisses the transient status line; error stays
-        // until explicitly cleared.
-        self.status = None;
-
         match &mut self.mode {
             Mode::Rename { .. } => {
                 return self.handle_rename_key(db, key);
@@ -205,13 +201,13 @@ impl SessionDetailScreen {
     }
 
     pub fn set_status(&mut self, message: String) {
-        self.status = Some(message);
+        self.status.set(message);
         self.error = None;
     }
 
     pub fn set_error(&mut self, message: String) {
         self.error = Some(message);
-        self.status = None;
+        self.status.clear();
     }
 
     fn handle_rename_key(&mut self, db: &Database, key: KeyEvent) -> DetailAction {
@@ -538,7 +534,7 @@ impl SessionDetailScreen {
                 ])
             }
             Mode::Browse => {
-                if let Some(msg) = &self.status {
+                if let Some(msg) = self.status.get() {
                     Line::from(Span::styled(
                         format!(" ✓ {msg}"),
                         Style::default().fg(theme::OK),

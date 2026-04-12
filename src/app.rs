@@ -16,11 +16,24 @@ use crate::tui::Tui;
 use crate::tui::event::{self, AppEvent};
 use crate::tui::screens::capture::{CaptureAction, CaptureScreen};
 use crate::tui::screens::config_editor::{ConfigEditorScreen, EditorAction};
+use crate::tui::screens::config_import::{ConfigImportScreen, ImportAction};
+use crate::tui::screens::config_list::{ConfigListAction, ConfigListScreen};
 use crate::tui::screens::device_picker::{DevicePickerScreen, PickerAction};
 use crate::tui::screens::new_session::{NewSessionScreen, WizardAction};
 use crate::tui::screens::session_detail::{DetailAction, SessionDetailScreen};
 use crate::tui::screens::sessions_list::{SessionsAction, SessionsListScreen};
 use crate::ui_server::UiServer;
+
+/// Tracks what opened the config editor so we know where to route the save.
+#[derive(Debug, Clone)]
+enum EditorContext {
+    /// Editing a session's config — save goes to `update_session_config`.
+    Session(i64),
+    /// Editing a standalone saved config — save goes to `update_config`.
+    SavedConfig(i64),
+    /// Creating a new standalone config — save goes to `create_config`.
+    NewConfig(String),
+}
 
 enum Screen {
     SessionsList,
@@ -28,6 +41,8 @@ enum Screen {
     NewSession(NewSessionScreen),
     SessionDetail(SessionDetailScreen),
     ConfigEditor(ConfigEditorScreen),
+    ConfigList(ConfigListScreen),
+    ConfigImport(ConfigImportScreen<'static>),
     Capture(CaptureScreen),
 }
 
@@ -41,6 +56,8 @@ pub struct App {
     ui_server: Option<UiServer>,
     /// (serial, display label) for the device shown in the header.
     active_device: Option<(String, String)>,
+    /// What opened the config editor — controls where save routes to.
+    editor_context: Option<EditorContext>,
 }
 
 impl App {
@@ -73,6 +90,7 @@ impl App {
             event_tx: None,
             ui_server: None,
             active_device,
+            editor_context: None,
         }
     }
 
@@ -115,6 +133,8 @@ impl App {
             Screen::NewSession(_) => "Perfetto CLI — New Session".to_string(),
             Screen::SessionDetail(d) => format!("Perfetto CLI — {}", d.session().name),
             Screen::ConfigEditor(_) => "Perfetto CLI — Config".to_string(),
+            Screen::ConfigList(_) => "Perfetto CLI — Configurations".to_string(),
+            Screen::ConfigImport(_) => "Perfetto CLI — Import Config".to_string(),
             Screen::Capture(_) => "Perfetto CLI — Capturing".to_string(),
         };
         let _ = execute!(std::io::stdout(), SetTitle(title));
@@ -125,6 +145,8 @@ impl App {
             Screen::NewSession(w) => w.render(frame),
             Screen::SessionDetail(d) => d.render(frame),
             Screen::ConfigEditor(e) => e.render(frame),
+            Screen::ConfigList(cl) => cl.render(frame),
+            Screen::ConfigImport(ci) => ci.render(frame),
             Screen::Capture(c) => c.render(frame),
         }
 
@@ -159,11 +181,11 @@ impl App {
                 Screen::NewSession(w) => w.on_devices_loaded(result),
                 _ => {}
             },
-            AppEvent::DeviceInfoLoaded(result) => {
-                if let Screen::DevicePicker(p) = &mut self.screen {
-                    p.on_device_info_loaded(result);
-                }
-            }
+            AppEvent::DeviceInfoLoaded(result) => match &mut self.screen {
+                Screen::DevicePicker(p) => p.on_device_info_loaded(result),
+                Screen::NewSession(w) => w.on_device_info_loaded(result),
+                _ => {}
+            },
             AppEvent::PackagesLoaded(result) => {
                 if let Screen::NewSession(w) = &mut self.screen {
                     w.on_packages_loaded(result);
@@ -249,6 +271,9 @@ impl App {
                     self.screen =
                         Screen::DevicePicker(DevicePickerScreen::new(self.db.clone(), tx));
                 }
+                SessionsAction::OpenConfigList => {
+                    self.screen = Screen::ConfigList(ConfigListScreen::new(self.db.clone()));
+                }
                 SessionsAction::NewSession => {
                     let tx = self.require_tx();
                     self.screen = Screen::NewSession(NewSessionScreen::new(
@@ -303,6 +328,7 @@ impl App {
                 DetailAction::Back => self.return_to_sessions_list(),
                 DetailAction::EditConfig => {
                     let session = d.session().clone();
+                    self.editor_context = Some(EditorContext::Session(session.id.unwrap_or(0)));
                     let editor = ConfigEditorScreen::new(
                         session.id,
                         session.name.clone(),
@@ -336,20 +362,92 @@ impl App {
                 CaptureAction::None => {}
             },
             Screen::ConfigEditor(e) => {
-                let session_id = e.session_id();
                 match e.on_key(key) {
-                    EditorAction::Cancel => self.return_to_detail(session_id),
+                    EditorAction::Cancel => {
+                        self.return_from_editor();
+                    }
                     EditorAction::Save(new_config) => {
-                        if let Some(id) = session_id {
-                            if let Err(err) = self.save_session_config(id, &new_config) {
-                                tracing::error!(?err, "failed to save session config");
-                            }
-                        }
-                        self.return_to_detail(session_id);
+                        self.save_editor_config(&new_config);
+                        self.return_from_editor();
                     }
                     EditorAction::None => {}
                 }
             }
+            Screen::ConfigList(cl) => match cl.on_key(key) {
+                ConfigListAction::Back => self.return_to_sessions_list(),
+                ConfigListAction::Edit(id, name, config) => {
+                    self.editor_context = Some(EditorContext::SavedConfig(id));
+                    let editor = ConfigEditorScreen::new(Some(id), name, &config);
+                    self.screen = Screen::ConfigEditor(editor);
+                }
+                ConfigListAction::CreateNew(name) => {
+                    self.editor_context = Some(EditorContext::NewConfig(name.clone()));
+                    let editor = ConfigEditorScreen::new(
+                        None,
+                        name,
+                        &crate::perfetto::TraceConfig::default(),
+                    );
+                    self.screen = Screen::ConfigEditor(editor);
+                }
+                ConfigListAction::Import => {
+                    self.screen =
+                        Screen::ConfigImport(ConfigImportScreen::new());
+                }
+                ConfigListAction::None => {}
+            },
+            Screen::ConfigImport(ci) => match ci.on_key(key) {
+                ImportAction::Cancel => {
+                    self.screen =
+                        Screen::ConfigList(ConfigListScreen::new(self.db.clone()));
+                }
+                ImportAction::Save { name, textproto } => {
+                    let mut config = crate::perfetto::TraceConfig::default();
+                    config.custom_textproto = Some(textproto);
+                    match self.db.create_config(&name, &config) {
+                        Ok(_) => tracing::info!(name, "imported config"),
+                        Err(e) => tracing::error!(?e, "failed to save imported config"),
+                    }
+                    self.screen =
+                        Screen::ConfigList(ConfigListScreen::new(self.db.clone()));
+                }
+                ImportAction::None => {}
+            },
+        }
+    }
+
+    fn save_editor_config(&mut self, config: &crate::perfetto::TraceConfig) {
+        let ctx = self.editor_context.take();
+        match ctx {
+            Some(EditorContext::Session(id)) => {
+                if let Err(e) = self.save_session_config(id, config) {
+                    tracing::error!(?e, "failed to save session config");
+                }
+            }
+            Some(EditorContext::SavedConfig(id)) => {
+                if let Err(e) = self.db.update_config(id, config) {
+                    tracing::error!(?e, "failed to update saved config");
+                }
+            }
+            Some(EditorContext::NewConfig(name)) => {
+                match self.db.create_config(&name, config) {
+                    Ok(_) => tracing::info!(name, "saved new config"),
+                    Err(e) => tracing::error!(?e, "failed to create config"),
+                }
+            }
+            None => {
+                tracing::warn!("no editor context — save discarded");
+            }
+        }
+    }
+
+    fn return_from_editor(&mut self) {
+        let ctx = self.editor_context.take();
+        match ctx {
+            Some(EditorContext::Session(id)) => self.return_to_detail(Some(id)),
+            Some(EditorContext::SavedConfig(_)) | Some(EditorContext::NewConfig(_)) => {
+                self.screen = Screen::ConfigList(ConfigListScreen::new(self.db.clone()));
+            }
+            None => self.return_to_sessions_list(),
         }
     }
 

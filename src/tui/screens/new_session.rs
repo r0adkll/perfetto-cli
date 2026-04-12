@@ -8,8 +8,10 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::adb;
+use crate::adb::DeviceInfo;
 use crate::config::Paths;
 use crate::db::Database;
+use crate::db::configs::SavedConfig;
 use crate::perfetto::TraceConfig;
 use crate::session::Session;
 use crate::tui::chrome;
@@ -24,6 +26,7 @@ enum Focus {
     Package,
     Suggestions,
     Device,
+    Config,
     Submit,
 }
 
@@ -33,7 +36,8 @@ impl Focus {
             Focus::Name => Focus::Package,
             Focus::Package => Focus::Suggestions,
             Focus::Suggestions => Focus::Device,
-            Focus::Device => Focus::Submit,
+            Focus::Device => Focus::Config,
+            Focus::Config => Focus::Submit,
             Focus::Submit => Focus::Name,
         }
     }
@@ -43,7 +47,8 @@ impl Focus {
             Focus::Package => Focus::Name,
             Focus::Suggestions => Focus::Package,
             Focus::Device => Focus::Suggestions,
-            Focus::Submit => Focus::Device,
+            Focus::Config => Focus::Device,
+            Focus::Submit => Focus::Config,
         }
     }
 }
@@ -64,11 +69,20 @@ pub struct NewSessionScreen {
     /// Human-readable name of the device those packages came from — used in
     /// the suggestion tags so `[pixel-7]` shows up instead of `[device]`.
     device_packages_source: Option<String>,
+    /// Serial of the device we last queried packages for, so we can detect
+    /// when the selection changes and re-query.
+    device_packages_serial: Option<String>,
     /// Filtered view over `recent_packages` + `device_packages`, rebuilt on
     /// every keystroke in the package field.
     suggestions: Vec<String>,
     suggestions_state: ListState,
     loading_packages: bool,
+    /// Saved configs available for selection. Index 0 = "Default", rest from DB.
+    saved_configs: Vec<SavedConfig>,
+    config_state: ListState,
+    /// Info about the currently-highlighted online device.
+    device_info: Option<DeviceInfo>,
+    device_info_serial: Option<String>,
     error: Option<String>,
     db: Database,
     paths: Paths,
@@ -84,6 +98,9 @@ pub enum WizardAction {
 impl NewSessionScreen {
     pub fn new(db: Database, paths: Paths, tx: UnboundedSender<AppEvent>) -> Self {
         let recent_packages = db.list_recent_packages().unwrap_or_default();
+        let saved_configs = db.list_configs().unwrap_or_default();
+        let mut config_state = ListState::default();
+        config_state.select(Some(0)); // "Default" is pre-selected
         let mut screen = Self {
             name: String::new(),
             package: String::new(),
@@ -94,9 +111,14 @@ impl NewSessionScreen {
             recent_packages,
             device_packages: Vec::new(),
             device_packages_source: None,
+            device_packages_serial: None,
             suggestions: Vec::new(),
             suggestions_state: ListState::default(),
             loading_packages: false,
+            saved_configs,
+            config_state,
+            device_info: None,
+            device_info_serial: None,
             error: None,
             db,
             paths,
@@ -137,9 +159,7 @@ impl NewSessionScreen {
 
     fn spawn_packages_load(&mut self, serial: String) {
         self.loading_packages = true;
-        // Remember the display name of the device we're about to query so
-        // suggestion tags (and the panel title) can show something like
-        // `[pixel-7]` instead of a generic `[device]` label.
+        self.device_packages_serial = Some(serial.clone());
         self.device_packages_source = self
             .devices
             .iter()
@@ -200,6 +220,7 @@ impl NewSessionScreen {
                 if let Some(serial) = self.online_device_serial() {
                     self.spawn_packages_load(serial);
                 }
+                self.maybe_fetch_device_info();
             }
             Err(e) => self.error = Some(e),
         }
@@ -240,6 +261,7 @@ impl NewSessionScreen {
             Focus::Package => self.handle_text_key(key, TextField::Package),
             Focus::Suggestions => self.handle_suggestions_key(key),
             Focus::Device => self.handle_device_key(key),
+            Focus::Config => self.handle_config_key(key),
             Focus::Submit => match key.code {
                 KeyCode::Enter => self.try_create(),
                 _ => WizardAction::None,
@@ -312,10 +334,14 @@ impl NewSessionScreen {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.move_device(1);
+                self.maybe_fetch_device_info();
+                self.maybe_refresh_packages();
                 WizardAction::None
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_device(-1);
+                self.maybe_fetch_device_info();
+                self.maybe_refresh_packages();
                 WizardAction::None
             }
             KeyCode::Char('r') => {
@@ -323,10 +349,97 @@ impl NewSessionScreen {
                 WizardAction::None
             }
             KeyCode::Enter => {
-                self.focus = Focus::Submit;
+                self.focus = Focus::Config;
                 WizardAction::None
             }
             _ => WizardAction::None,
+        }
+    }
+
+    pub fn on_device_info_loaded(&mut self, result: Result<DeviceInfo, String>) {
+        if let Ok(info) = result {
+            if self.device_info_serial.as_deref() == Some(&info.serial) {
+                self.device_info = Some(info);
+            }
+        }
+    }
+
+    /// Re-query installed packages if the selected device changed.
+    fn maybe_refresh_packages(&mut self) {
+        let current_serial = self.selected_online_device().map(|d| d.serial.clone());
+        if current_serial != self.device_packages_serial {
+            match current_serial {
+                Some(serial) => self.spawn_packages_load(serial),
+                None => {
+                    self.device_packages.clear();
+                    self.device_packages_source = None;
+                    self.device_packages_serial = None;
+                    self.recompute_suggestions();
+                }
+            }
+        }
+    }
+
+    fn maybe_fetch_device_info(&mut self) {
+        let Some(entry) = self.selected_online_device() else {
+            self.device_info = None;
+            self.device_info_serial = None;
+            return;
+        };
+        let serial = entry.serial.clone();
+        if self.device_info_serial.as_deref() == Some(&serial) {
+            return; // already loading or loaded
+        }
+        self.device_info = None;
+        self.device_info_serial = Some(serial.clone());
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = adb::query_device_info(&serial).await.map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::DeviceInfoLoaded(result));
+        });
+    }
+
+    fn selected_online_device(&self) -> Option<&DeviceEntry> {
+        let idx = self.device_state.selected()?;
+        let entry = self.devices.get(idx)?;
+        if matches!(entry.state, EntryState::Online) {
+            Some(entry)
+        } else {
+            None
+        }
+    }
+
+    fn handle_config_key(&mut self, key: KeyEvent) -> WizardAction {
+        // Total options = 1 ("Default") + saved_configs.len()
+        let total = 1 + self.saved_configs.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                let cur = self.config_state.selected().unwrap_or(0);
+                self.config_state.select(Some((cur + 1) % total));
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let cur = self.config_state.selected().unwrap_or(0);
+                self.config_state
+                    .select(Some((cur + total - 1) % total));
+            }
+            KeyCode::Enter => {
+                self.focus = Focus::Submit;
+            }
+            _ => {}
+        }
+        WizardAction::None
+    }
+
+    /// Returns the TraceConfig for the currently selected config option.
+    /// Index 0 = Default, 1+ = saved configs from DB.
+    fn selected_trace_config(&self) -> TraceConfig {
+        match self.config_state.selected().unwrap_or(0) {
+            0 => TraceConfig::default(),
+            i => self
+                .saved_configs
+                .get(i - 1)
+                .map(|c| c.config.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -372,7 +485,7 @@ impl NewSessionScreen {
             name: name.to_string(),
             package_name: package.to_string(),
             device_serial: serial,
-            config: TraceConfig::default(),
+            config: self.selected_trace_config(),
             folder_path: folder,
             created_at,
             notes: None,
@@ -393,15 +506,11 @@ impl NewSessionScreen {
 
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let chunks = Layout::default()
+        let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(chrome::HEADER_HEIGHT),
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Length(6),
-                Constraint::Min(5),
-                Constraint::Length(3),
+                Constraint::Min(1),
                 Constraint::Length(1),
             ])
             .split(area);
@@ -410,78 +519,43 @@ impl NewSessionScreen {
             Span::styled("  ✨ New session ", theme::title()),
             Span::styled("— Tab to move between fields, Esc to cancel", theme::hint()),
         ]));
-        frame.render_widget(header, chunks[0]);
+        frame.render_widget(header, outer[0]);
+
+        // Two-pane: left 2/3 = form fields, right 1/3 = device list + info
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(outer[1]);
+
+        // --- Left pane: form fields ---
+        let form = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(6),
+                Constraint::Length(5),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ])
+            .split(panes[0]);
 
         self.render_text_field(
             frame,
-            chunks[1],
+            form[0],
             "Session name",
             &self.name,
             self.focus == Focus::Name,
         );
         self.render_text_field(
             frame,
-            chunks[2],
+            form[1],
             "Package name (e.g. com.example.myapp)",
             &self.package,
             self.focus == Focus::Package,
         );
-
-        self.render_suggestions(frame, chunks[3]);
-
-        let device_block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Device ")
-            .border_style(focus_style(self.focus == Focus::Device));
-
-        if self.loading_devices && self.devices.is_empty() {
-            frame.render_widget(
-                Paragraph::new("  ⏳ listing devices…").block(device_block),
-                chunks[4],
-            );
-        } else if self.devices.is_empty() {
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from("  No devices found."),
-                    Line::from(Span::styled(
-                        "  Press [r] to retry or Esc to cancel.",
-                        theme::hint(),
-                    )),
-                ])
-                .block(device_block),
-                chunks[4],
-            );
-        } else {
-            let items: Vec<ListItem> = self
-                .devices
-                .iter()
-                .map(|e| {
-                    let label = e.nickname.clone().unwrap_or_else(|| {
-                        e.model.clone().unwrap_or_else(|| "Android device".into())
-                    });
-                    let state_str = match e.state {
-                        EntryState::Online => "● online",
-                        EntryState::Offline => "○ offline",
-                        EntryState::Unauthorized => "⚠ unauthorized",
-                        EntryState::Other(_) => "? other",
-                        EntryState::NotConnected => "· remembered",
-                    };
-                    ListItem::new(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(format!("{state_str:<14}"), theme::hint()),
-                        Span::raw("  "),
-                        Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
-                        Span::raw("  "),
-                        Span::styled(format!("({})", e.serial), theme::hint()),
-                    ]))
-                })
-                .collect();
-            let list = List::new(items)
-                .block(device_block)
-                .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
-                .highlight_symbol("▶ ");
-            frame.render_stateful_widget(list, chunks[4], &mut self.device_state);
-        }
+        self.render_suggestions(frame, form[2]);
+        self.render_config_picker(frame, form[3]);
 
         let submit_text = if self.focus == Focus::Submit {
             " ▶ Create session (Enter) "
@@ -504,8 +578,18 @@ impl NewSessionScreen {
                 .borders(Borders::ALL)
                 .border_style(focus_style(self.focus == Focus::Submit)),
         );
-        frame.render_widget(submit, chunks[5]);
+        frame.render_widget(submit, form[4]);
 
+        // --- Right pane: device list (top) + device info (bottom) ---
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(panes[1]);
+
+        self.render_device_list(frame, right[0]);
+        self.render_device_info(frame, right[1]);
+
+        // --- Footer ---
         let footer = match &self.error {
             Some(msg) => Line::from(Span::styled(
                 format!(" ✗ {msg}"),
@@ -516,7 +600,126 @@ impl NewSessionScreen {
                 theme::hint(),
             )),
         };
-        frame.render_widget(Paragraph::new(footer), chunks[6]);
+        frame.render_widget(Paragraph::new(footer), outer[2]);
+    }
+
+    fn render_device_list(&mut self, frame: &mut Frame, area: Rect) {
+        let device_block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Device ")
+            .border_style(focus_style(self.focus == Focus::Device));
+
+        if self.loading_devices && self.devices.is_empty() {
+            frame.render_widget(
+                Paragraph::new("  ⏳ listing devices…").block(device_block),
+                area,
+            );
+        } else if self.devices.is_empty() {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from("  No devices found."),
+                    Line::from(Span::styled(
+                        "  Press [r] to retry.",
+                        theme::hint(),
+                    )),
+                ])
+                .block(device_block),
+                area,
+            );
+        } else {
+            let items: Vec<ListItem> = self
+                .devices
+                .iter()
+                .map(|e| {
+                    let label = e.nickname.clone().unwrap_or_else(|| {
+                        e.model.clone().unwrap_or_else(|| "Android device".into())
+                    });
+                    let state_str = match e.state {
+                        EntryState::Online => "●",
+                        EntryState::Offline => "○",
+                        EntryState::Unauthorized => "⚠",
+                        EntryState::Other(_) => "?",
+                        EntryState::NotConnected => "·",
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(state_str, theme::hint()),
+                        Span::raw(" "),
+                        Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+                    ]))
+                })
+                .collect();
+            let list = List::new(items)
+                .block(device_block)
+                .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+                .highlight_symbol("▶ ");
+            frame.render_stateful_widget(list, area, &mut self.device_state);
+        }
+    }
+
+    fn render_device_info(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Device Info ");
+
+        match &self.device_info {
+            Some(info) => {
+                let mut lines = Vec::new();
+                if let Some(name) = &info.device_name {
+                    lines.push(Line::from(vec![
+                        Span::styled("  Device:   ", theme::hint()),
+                        Span::styled(
+                            name.clone(),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
+                if let Some(mfr) = &info.manufacturer {
+                    lines.push(Line::from(vec![
+                        Span::styled("  Make:     ", theme::hint()),
+                        Span::raw(mfr.clone()),
+                    ]));
+                }
+                lines.push(Line::from(vec![
+                    Span::styled("  Android:  ", theme::hint()),
+                    Span::raw(info.android_display()),
+                ]));
+                if let Some(cpu) = &info.cpu_abi {
+                    lines.push(Line::from(vec![
+                        Span::styled("  CPU:      ", theme::hint()),
+                        Span::raw(cpu.clone()),
+                    ]));
+                }
+                if let Some(ram) = info.ram_bytes {
+                    lines.push(Line::from(vec![
+                        Span::styled("  RAM:      ", theme::hint()),
+                        Span::raw(format!("{:.1} GB", ram as f64 / 1_073_741_824.0)),
+                    ]));
+                }
+                if let Some(pv) = &info.perfetto_version {
+                    lines.push(Line::from(vec![
+                        Span::styled("  Perfetto: ", theme::hint()),
+                        Span::raw(pv.clone()),
+                    ]));
+                }
+                lines.push(Line::from(vec![
+                    Span::styled("  Serial:   ", theme::hint()),
+                    Span::styled(info.serial.clone(), theme::hint()),
+                ]));
+                frame.render_widget(Paragraph::new(lines).block(block), area);
+            }
+            None => {
+                let msg = if self.device_info_serial.is_some() {
+                    "  ⏳ loading…"
+                } else {
+                    "  Select an online device"
+                };
+                frame.render_widget(
+                    Paragraph::new(Span::styled(msg, theme::hint())).block(block),
+                    area,
+                );
+            }
+        }
     }
 
     fn render_suggestions(&mut self, frame: &mut Frame, area: Rect) {
@@ -583,6 +786,47 @@ impl NewSessionScreen {
             .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(list, area, &mut self.suggestions_state);
+    }
+
+    fn render_config_picker(&mut self, frame: &mut Frame, area: Rect) {
+        let focused = self.focus == Focus::Config;
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Config ")
+            .border_style(focus_style(focused));
+
+        // Build items: "Default" first, then saved configs
+        let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Default",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled("built-in defaults", theme::hint()),
+        ]))];
+
+        for c in &self.saved_configs {
+            let cats = c.config.atrace_categories.len();
+            items.push(ListItem::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    c.name.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    format!("{}ms  {}KB  {} cats", c.config.duration_ms, c.config.buffer_size_kb, cats),
+                    theme::hint(),
+                ),
+            ])));
+        }
+
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(Style::default().bg(theme::ACCENT).fg(Color::Black))
+            .highlight_symbol("▶ ");
+        frame.render_stateful_widget(list, area, &mut self.config_state);
     }
 
     fn render_text_field(

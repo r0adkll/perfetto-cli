@@ -1,3 +1,4 @@
+pub mod configs;
 pub mod devices;
 pub mod sessions;
 pub mod traces;
