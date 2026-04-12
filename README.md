@@ -2,6 +2,8 @@
 
 A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces sessions on Android.
 
+![](.github/art/demo.gif)
+
 ## Features
 
 | |  |  |
