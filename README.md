@@ -115,14 +115,16 @@ cargo test   # 34 tests
 
 ## Releasing
 
-Tag-driven via [cargo-dist](https://github.com/axodotdev/cargo-dist). Builds for macOS (Intel + ARM), Linux (x86_64 + aarch64), Windows (x86_64).
+Tag-driven via [cargo-dist](https://github.com/axodotdev/cargo-dist). Use the release script:
 
 ```bash
-# bump version, commit, tag, push
-git tag v0.2.0 && git push origin main v0.2.0
+./scripts/release.sh patch   # 0.1.0 → 0.1.1
+./scripts/release.sh minor   # 0.1.0 → 0.2.0
+./scripts/release.sh major   # 0.1.0 → 1.0.0
+./scripts/release.sh 2.0.0   # explicit version
 ```
 
-Publishes archives, checksums, a shell installer, and a Homebrew formula to [`r0adkll/homebrew-tap`](https://github.com/r0adkll/homebrew-tap).
+The script bumps `Cargo.toml`, updates `CHANGELOG.md` (moves `[Unreleased]` into the new version, updates comparison links), commits, tags, and pushes. cargo-dist then builds for macOS (Intel + ARM), Linux (x86_64 + aarch64), and Windows, publishing archives, checksums, a shell installer, and a Homebrew formula to [`r0adkll/homebrew-tap`](https://github.com/r0adkll/homebrew-tap).
 
 ## Credits
 
