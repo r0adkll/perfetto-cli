@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-12
+
 ### Changed
 - Config editor rewritten to mirror [ui.perfetto.dev](https://ui.perfetto.dev/#!/record) recorder UI sections
 - Probe groups restructured: CPU, GPU, Power, Memory, Android Apps, Advanced — each with independently toggled sub-options and inline poll intervals
@@ -66,5 +68,5 @@ Initial release.
 - 🏠 Welcome banner with ASCII logo on empty sessions list
 - 🔧 Release pipeline via cargo-dist with shell installer + Homebrew tap
 
-[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
+[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...v0.2.0[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
