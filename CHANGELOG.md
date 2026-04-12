@@ -1,0 +1,66 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Changed
+- Config editor rewritten to mirror [ui.perfetto.dev](https://ui.perfetto.dev/#!/record) recorder UI sections
+- Probe groups restructured: CPU, GPU, Power, Memory, Android Apps, Advanced — each with independently toggled sub-options and inline poll intervals
+- Atrace categories are now the single source of truth (23 defaults from perfetto's Appendix A)
+- Buffer default bumped from 32 MB to 64 MB to match perfetto UI
+- `linux.sys_stats` fields merged into a single data source block when multiple probes need them
+- Process/thread association auto-enabled as a dependency for CPU scheduling, LMK, and high-freq memory probes
+- `ftrace/print` auto-added when any atrace category is enabled
+- README rewritten with concise emoji feature list
+- Device picker now shows a two-pane detail view with device info
+
+### Added
+- Dynamic terminal tab/window title updates per screen
+- CPU coarse usage polling probe (`linux.sys_stats` with `stat_period_ms`)
+- CPU frequency/idle polling probe (`cpufreq_period_ms`)
+- GPU work period probe (`power/gpu_work_period`)
+- Battery drain & power rails probe (`android.power` data source)
+- Board voltages probe (regulator/clock ftrace events)
+- Kernel meminfo polling probe with configurable interval
+- High-frequency memory events probe (mm_event, rss_stat, ion/dmabuf)
+- Logcat probe with selectable log buffers (crash, default, events, kernel, system)
+- Per-process stats with configurable poll interval
+- Advanced ftrace settings (kernel symbol resolution, generic event filtering)
+- Reference doc at `docs/perfetto-recorder-config-reference.md`
+
+### Removed
+- Built-in presets (Default, App Startup, Frame Timing, CPU Scheduling) — one session = one config
+- Custom saveable presets and the `presets` DB table
+- Master `enabled` toggle on probe groups — each sub-option is independent
+
+## [0.1.0] - 2026-04-11
+
+Initial release.
+
+### Added
+- 📦 Session management — group captures by target app + device with portable on-disk folders
+- 📱 Device picker with `adb devices -l`, nicknames, and persistent memory
+- ⚙️ Trace config editor with four built-in presets and a live textproto preview
+- 🎬 Capture engine ported from Google's `record_android_trace`
+- 🚀 Cold-start support — force-stop, perfetto, `am start`, deferred Compose broadcast
+- ⏹️ Ctrl-C / Esc cancellation with SIGTERM + partial-trace pull
+- 🎨 Jetpack Compose tracing via `ENABLE_TRACING` broadcast + `track_event` data source
+- 🔍 Auto-injection of session package into `atrace_apps`
+- 🎯 Launch activity override for LeakCanary and similar conflicts
+- 🏷️ Trace rename (with `.pftrace` extension handling), tag, delete, filter by tag
+- 💡 Package name suggestions from session history + live `pm list packages -3`
+- 🌐 ui.perfetto.dev handoff via short-lived `tiny_http` server on `:9001` with CORS
+- 📊 Auto-open traces in browser on capture completion (session-level toggle)
+- 📐 Two-pane session detail showing textproto preview on wide terminals (≥120 cols)
+- ⌨️ Shared text input helper with word-delete (`Alt-⌫`/`Ctrl-W`) and clear (`Ctrl-U`)
+- 📁 Date-agnostic session folders with collision-safe naming
+- 🕐 ISO 8601 trace filenames (`YYYY-MM-DD_HH-MM-SS.pftrace`)
+- 🏠 Welcome banner with ASCII logo on empty sessions list
+- 🔧 Release pipeline via cargo-dist with shell installer + Homebrew tap
+
+[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
