@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Open session directory in OS file browser via `[d]` on the session detail screen
+
 ## [0.3.1] - 2026-04-12
 
 ### Changed

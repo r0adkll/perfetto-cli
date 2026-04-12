@@ -380,6 +380,15 @@ impl App {
                         }
                     }
                 }
+                DetailAction::OpenFolder(path) => {
+                    let outcome = open::that(&path);
+                    if let Screen::SessionDetail(d) = &mut self.screen {
+                        match outcome {
+                            Ok(_) => d.set_status("opened folder".into()),
+                            Err(e) => d.set_error(format!("open folder failed: {e}")),
+                        }
+                    }
+                }
                 DetailAction::None => {}
             },
             Screen::Capture(c) => match c.on_key(key) {

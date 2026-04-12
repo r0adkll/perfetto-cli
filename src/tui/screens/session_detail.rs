@@ -51,6 +51,7 @@ pub enum DetailAction {
     EditConfig,
     Capture,
     OpenTrace(PathBuf),
+    OpenFolder(PathBuf),
 }
 
 impl SessionDetailScreen {
@@ -198,6 +199,7 @@ impl SessionDetailScreen {
                     DetailAction::None
                 }
             }
+            KeyCode::Char('d') => DetailAction::OpenFolder(self.session.folder_path.clone()),
             KeyCode::Char('[') => {
                 self.preview_scroll = self.preview_scroll.saturating_sub(1);
                 DetailAction::None
@@ -627,6 +629,8 @@ impl SessionDetailScreen {
                         Span::raw(" delete  "),
                         Span::styled("[f]", theme::title()),
                         Span::raw(" filter  "),
+                        Span::styled("[d]", theme::title()),
+                        Span::raw(" folder  "),
                         Span::styled("[e]", theme::title()),
                         Span::raw(" config  "),
                         Span::styled("[Esc]", theme::title()),
