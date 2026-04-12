@@ -7,11 +7,14 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 - 📱 **Device picker** — live `adb devices` with nicknames and memory
 - 📦 **Session management** — group captures by app + device, stored in portable folders
 - ⚙️ **Config editor** — grouped probe toggles mirroring [ui.perfetto.dev](https://ui.perfetto.dev/#!/record) with a live textproto preview
+- 📋 **Global configs** — save, duplicate, and reuse trace configurations across sessions; import raw textproto via paste, export to clipboard
 - 🎬 **Capture engine** — ported from Google's `record_android_trace`, with `Ctrl-C` cancellation and partial-trace pull
 - 🚀 **Cold-start support** — force-stop, trace, launch, with deferred Compose broadcast
 - 🎨 **Compose tracing** — `track_event` data source + `ENABLE_TRACING` broadcast
 - 🏷️ **Trace management** — rename, tag, delete, filter by tag
-- 🌐 **ui.perfetto.dev handoff** — one-key open via a short-lived local HTTP server
+- 🌐 **ui.perfetto.dev handoff** — one-key open via a short-lived local HTTP server with optional startup commands (debug tracks, queries, annotations, and more)
+- 🧩 **Startup commands** — build reusable command sets from a 14-command catalog and pass them to the Perfetto UI on open
+- 🎨 **Theming** — 39 built-in themes via a searchable picker, plus custom themes in `~/.config/perfetto-cli/themes/`
 
 ## Requirements
 
@@ -71,6 +74,14 @@ Press `e` on any session. The editor mirrors the [perfetto recorder UI](https://
 Each probe group expands to show sub-options with descriptions. Toggles that have a poll interval reveal a number field when enabled. The right panel shows the generated textproto updating live.
 
 `Ctrl-S` saves. `Esc` cancels. `Space` toggles. `Enter` expands groups or starts editing fields. `←` collapses from inside a group.
+
+## Theming
+
+Press `t` from the home screen to open the theme picker. Search and preview any of the 39 built-in themes provided by [opaline](https://github.com/r0adkll/opaline), or create your own.
+
+Custom themes are `.toml` files dropped into `~/.config/perfetto-cli/themes/`. A theme defines a color palette, semantic tokens, and named styles. See the bundled [`perfetto.toml`](assets/perfetto.toml) for the full format, or refer to the [opaline theme spec](https://github.com/r0adkll/opaline#theme-format).
+
+Your selected theme persists across sessions.
 
 ## Text input shortcuts
 

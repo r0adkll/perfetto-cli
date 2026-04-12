@@ -45,7 +45,9 @@ case "$BUMP" in
     minor) NEXT="${CUR_MAJOR}.$((CUR_MINOR + 1)).0" ;;
     patch) NEXT="${CUR_MAJOR}.${CUR_MINOR}.$((CUR_PATCH + 1))" ;;
     *)
-        # Treat as explicit version string
+        # Validate as semver (X.Y.Z with optional pre-release/build metadata)
+        [[ "$BUMP" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$ ]] \
+            || die "invalid argument '${BUMP}' — expected major|minor|patch or a valid semver (e.g. 1.2.3)"
         NEXT="$BUMP"
         ;;
 esac
