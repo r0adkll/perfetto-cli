@@ -4,17 +4,19 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 
 ## Features
 
-- 📱 **Device picker** — live `adb devices` with nicknames and memory
-- 📦 **Session management** — group captures by app + device, stored in portable folders
-- ⚙️ **Config editor** — grouped probe toggles mirroring [ui.perfetto.dev](https://ui.perfetto.dev/#!/record) with a live textproto preview
-- 📋 **Global configs** — save, duplicate, and reuse trace configurations across sessions; import raw textproto via paste, export to clipboard
-- 🎬 **Capture engine** — ported from Google's `record_android_trace`, with `Ctrl-C` cancellation and partial-trace pull
-- 🚀 **Cold-start support** — force-stop, trace, launch, with deferred Compose broadcast
-- 🎨 **Compose tracing** — `track_event` data source + `ENABLE_TRACING` broadcast
-- 🏷️ **Trace management** — rename, tag, delete, filter by tag
-- 🌐 **ui.perfetto.dev handoff** — one-key open via a short-lived local HTTP server with optional startup commands (debug tracks, queries, annotations, and more)
-- 🧩 **Startup commands** — build reusable command sets from a 14-command catalog and pass them to the Perfetto UI on open
-- 🎨 **Theming** — 39 built-in themes via a searchable picker, plus custom themes in `~/.config/perfetto-cli/themes/`
+| |  |  |
+|---|---|---|
+| 📱 | **Device picker** | Live `adb devices` with nicknames and memory |
+| 📦 | **Session management** | Group captures by app + device, stored in portable folders |
+| ⚙️ | **Config editor** | Grouped probe toggles mirroring [ui.perfetto.dev](https://ui.perfetto.dev/#!/record) with a live textproto preview |
+| 📋 | **Global configs** | Save, duplicate, and reuse trace configurations across sessions; import raw textproto via paste, export to clipboard |
+| 🎬 | **Capture engine** | Ported from Google's `record_android_trace`, with `Ctrl-C` cancellation and partial-trace pull |
+| 🚀 | **Cold-start support** | Force-stop, trace, launch, with deferred Compose broadcast |
+| 🎨 | **Compose tracing** | `track_event` data source + `ENABLE_TRACING` broadcast |
+| 🏷️ | **Trace management** | Rename, tag, delete, filter by tag |
+| 🌐 | **ui.perfetto.dev handoff** | One-key open via a short-lived local HTTP server with optional startup commands |
+| 🧩 | **Startup commands** | Build reusable command sets from a 14-command catalog and pass them to the Perfetto UI on open |
+| 🎨 | **Theming** | 39 built-in themes via a searchable picker, plus custom themes in `~/.config/perfetto-cli/themes/` |
 
 ## Requirements
 
