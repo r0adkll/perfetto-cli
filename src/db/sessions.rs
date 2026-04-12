@@ -48,8 +48,9 @@ impl Database {
         let mut out = Vec::new();
         for r in rows {
             let r = r?;
-            let config: TraceConfig = serde_json::from_str(&r.config_json)
+            let mut config: TraceConfig = serde_json::from_str(&r.config_json)
                 .context("deserialize session.config_json")?;
+            config.migrate_legacy();
             let created_at: DateTime<Utc> = DateTime::parse_from_rfc3339(&r.created_at)
                 .context("parse session.created_at")?
                 .with_timezone(&Utc);

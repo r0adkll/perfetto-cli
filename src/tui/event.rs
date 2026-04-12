@@ -2,6 +2,7 @@ use crossterm::event::{Event as CtEvent, EventStream, KeyEvent};
 use futures::StreamExt;
 use tokio::sync::mpsc;
 
+use crate::adb::DeviceInfo;
 use crate::perfetto::capture::{CaptureEvent, CaptureResult};
 use crate::tui::screens::device_picker::DeviceEntry;
 
@@ -10,6 +11,7 @@ pub enum AppEvent {
     Tick,
     DevicesLoaded(Result<Vec<DeviceEntry>, String>),
     PackagesLoaded(Result<Vec<String>, String>),
+    DeviceInfoLoaded(Result<DeviceInfo, String>),
     Capture(CaptureEvent),
     CaptureDone(Result<CaptureResult, String>),
 }

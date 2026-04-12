@@ -17,7 +17,7 @@ const HOME_LOGO: &str = include_str!("../../assets/home_logo.txt");
 /// in the top border so branding stays consistent, and the screen's own
 /// context line lives inside the box.
 pub fn app_header<'a>(subtitle: Line<'a>) -> Paragraph<'a> {
-    let title = format!(" 📊 {APP_NAME}  v{APP_VERSION} ");
+    let title = format!(" 📊 {APP_NAME} • v{APP_VERSION} ");
     // Pad the subtitle with a blank row above and below so the content
     // doesn't hug the box borders. Screens render the header into a
     // 5-row Length constraint: top border + pad + subtitle + pad + bottom
@@ -60,7 +60,7 @@ pub fn home_banner() -> Vec<Line<'static>> {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        format!("Android trace sessions  ·  v{APP_VERSION}"),
+        format!("Android Tracing  ·  v{APP_VERSION}"),
         theme::hint(),
     )));
     lines.push(Line::from(""));

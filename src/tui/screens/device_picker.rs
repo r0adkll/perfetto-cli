@@ -3,19 +3,21 @@ use std::collections::HashMap;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::adb;
-use crate::adb::DeviceState;
+use crate::adb::{DeviceInfo, DeviceState};
 use crate::db::Database;
 use crate::tui::chrome;
 use crate::tui::event::AppEvent;
 use crate::tui::text_input::{self, TextAction};
 use crate::tui::theme;
+
+const TWO_PANE_WIDTH: u16 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryState {
@@ -72,6 +74,13 @@ enum Mode {
     EditNickname { buffer: String },
 }
 
+enum DetailState {
+    None,
+    Loading(String),
+    Loaded(Box<DeviceInfo>),
+    Error(String),
+}
+
 pub struct DevicePickerScreen {
     entries: Vec<DeviceEntry>,
     list_state: ListState,
@@ -79,6 +88,7 @@ pub struct DevicePickerScreen {
     mode: Mode,
     db: Database,
     tx: UnboundedSender<AppEvent>,
+    detail: DetailState,
 }
 
 impl DevicePickerScreen {
@@ -90,6 +100,7 @@ impl DevicePickerScreen {
             mode: Mode::Browse,
             db,
             tx,
+            detail: DetailState::None,
         };
         screen.spawn_refresh();
         screen
@@ -118,8 +129,25 @@ impl DevicePickerScreen {
                         self.list_state.select(Some(self.entries.len() - 1));
                     }
                 }
+                self.maybe_fetch_detail();
             }
             Err(e) => self.load = LoadState::Error(e),
+        }
+    }
+
+    pub fn on_device_info_loaded(&mut self, result: Result<DeviceInfo, String>) {
+        match result {
+            Ok(info) => {
+                // Only accept if we're still waiting on this serial.
+                if let DetailState::Loading(s) = &self.detail {
+                    if *s == info.serial {
+                        self.detail = DetailState::Loaded(Box::new(info));
+                    }
+                }
+            }
+            Err(e) => {
+                self.detail = DetailState::Error(e);
+            }
         }
     }
 
@@ -202,11 +230,42 @@ impl DevicePickerScreen {
         let current = self.list_state.selected().unwrap_or(0) as i32;
         let next = (current + delta).rem_euclid(len);
         self.list_state.select(Some(next as usize));
+        self.maybe_fetch_detail();
     }
 
     fn selected_entry(&self) -> Option<&DeviceEntry> {
         self.list_state.selected().and_then(|i| self.entries.get(i))
     }
+
+    fn maybe_fetch_detail(&mut self) {
+        let Some(entry) = self.selected_entry() else {
+            self.detail = DetailState::None;
+            return;
+        };
+        if entry.state != EntryState::Online {
+            self.detail = DetailState::None;
+            return;
+        }
+        let serial = entry.serial.clone();
+
+        // Already loading or loaded for this serial — skip.
+        match &self.detail {
+            DetailState::Loading(s) if *s == serial => return,
+            DetailState::Loaded(info) if info.serial == serial => return,
+            _ => {}
+        }
+
+        self.detail = DetailState::Loading(serial.clone());
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = adb::query_device_info(&serial).await.map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::DeviceInfoLoaded(result));
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Rendering
+    // -----------------------------------------------------------------------
 
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
@@ -225,12 +284,54 @@ impl DevicePickerScreen {
         ]));
         frame.render_widget(header, chunks[0]);
 
+        // Two-pane: horizontal when wide, vertical when narrow.
+        let (list_area, detail_area) = if area.width >= TWO_PANE_WIDTH {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(chunks[1]);
+            (cols[0], cols[1])
+        } else {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+                .split(chunks[1]);
+            (rows[0], rows[1])
+        };
+
+        self.render_list(frame, list_area);
+        self.render_detail(frame, detail_area);
+
+        let footer_line = match &self.mode {
+            Mode::Browse => Line::from(vec![
+                Span::styled(" [↑/↓]", theme::title()),
+                Span::raw(" move  "),
+                Span::styled("[Enter]", theme::title()),
+                Span::raw(" select  "),
+                Span::styled("[n]", theme::title()),
+                Span::raw(" nickname  "),
+                Span::styled("[r]", theme::title()),
+                Span::raw(" refresh  "),
+                Span::styled("[Esc]", theme::title()),
+                Span::raw(" back"),
+            ]),
+            Mode::EditNickname { buffer } => Line::from(vec![
+                Span::styled(" nickname › ", theme::title()),
+                Span::raw(buffer.clone()),
+                Span::styled("_", theme::hint()),
+                Span::styled("   [Enter] save  [Esc] cancel", theme::hint()),
+            ]),
+        };
+        frame.render_widget(Paragraph::new(footer_line), chunks[2]);
+    }
+
+    fn render_list(&mut self, frame: &mut Frame, area: Rect) {
         let body_block = Block::default().borders(Borders::ALL).title(" adb devices ");
 
         match &self.load {
             LoadState::Loading => {
                 let p = Paragraph::new("  ⏳ running `adb devices -l`…").block(body_block);
-                frame.render_widget(p, chunks[1]);
+                frame.render_widget(p, area);
             }
             LoadState::Error(msg) => {
                 let p = Paragraph::new(vec![
@@ -242,7 +343,7 @@ impl DevicePickerScreen {
                     Line::from(Span::styled("  Press [r] to retry", theme::hint())),
                 ])
                 .block(body_block);
-                frame.render_widget(p, chunks[1]);
+                frame.render_widget(p, area);
             }
             LoadState::Loaded if self.entries.is_empty() => {
                 let p = Paragraph::new(vec![
@@ -254,7 +355,7 @@ impl DevicePickerScreen {
                     )),
                 ])
                 .block(body_block);
-                frame.render_widget(p, chunks[1]);
+                frame.render_widget(p, area);
             }
             LoadState::Loaded => {
                 let items: Vec<ListItem> = self
@@ -280,33 +381,135 @@ impl DevicePickerScreen {
                     .collect();
                 let list = List::new(items)
                     .block(body_block)
-                    .highlight_style(Style::default().bg(theme::ACCENT).fg(ratatui::style::Color::Black))
+                    .highlight_style(
+                        Style::default()
+                            .bg(theme::ACCENT)
+                            .fg(ratatui::style::Color::Black),
+                    )
                     .highlight_symbol("▶ ");
-                frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
+                frame.render_stateful_widget(list, area, &mut self.list_state);
             }
         }
+    }
 
-        let footer_line = match &self.mode {
-            Mode::Browse => Line::from(vec![
-                Span::styled(" [↑/↓]", theme::title()),
-                Span::raw(" move  "),
-                Span::styled("[Enter]", theme::title()),
-                Span::raw(" select  "),
-                Span::styled("[n]", theme::title()),
-                Span::raw(" nickname  "),
-                Span::styled("[r]", theme::title()),
-                Span::raw(" refresh  "),
-                Span::styled("[Esc]", theme::title()),
-                Span::raw(" back"),
-            ]),
-            Mode::EditNickname { buffer } => Line::from(vec![
-                Span::styled(" nickname › ", theme::title()),
-                Span::raw(buffer.clone()),
-                Span::styled("_", theme::hint()),
-                Span::styled("   [Enter] save  [Esc] cancel", theme::hint()),
-            ]),
-        };
-        frame.render_widget(Paragraph::new(footer_line), chunks[2]);
+    fn render_detail(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Device Details ");
+
+        match &self.detail {
+            DetailState::None => {
+                if let Some(entry) = self.list_state.selected().and_then(|i| self.entries.get(i)) {
+                    let name = entry
+                        .nickname
+                        .clone()
+                        .unwrap_or_else(|| entry.model.clone().unwrap_or_else(|| "Unknown".into()));
+                    let lines = vec![
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(name, Style::default().add_modifier(Modifier::BOLD)),
+                        ]),
+                        Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(&entry.serial, theme::hint()),
+                        ]),
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "  Connect device to view details",
+                            theme::hint(),
+                        )),
+                    ];
+                    frame.render_widget(Paragraph::new(lines).block(block), area);
+                } else {
+                    frame.render_widget(
+                        Paragraph::new("  Select a device").block(block),
+                        area,
+                    );
+                }
+            }
+            DetailState::Loading(_) => {
+                frame.render_widget(
+                    Paragraph::new("  ⏳ Loading device info…").block(block),
+                    area,
+                );
+            }
+            DetailState::Loaded(info) => {
+                let mut lines: Vec<Line> = Vec::new();
+                lines.push(Line::from(""));
+
+                // Device name + manufacturer
+                if let Some(name) = &info.device_name {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(name, Style::default().add_modifier(Modifier::BOLD)),
+                    ]));
+                }
+                if let Some(mfg) = &info.manufacturer {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(mfg, theme::hint()),
+                    ]));
+                }
+                lines.push(Line::from(""));
+
+                // Specs table
+                lines.push(Line::from(vec![
+                    Span::styled("  Android    ", theme::hint()),
+                    Span::raw(info.android_display()),
+                ]));
+                if let Some(cpu) = &info.cpu_abi {
+                    lines.push(Line::from(vec![
+                        Span::styled("  CPU        ", theme::hint()),
+                        Span::raw(cpu),
+                    ]));
+                }
+                if let Some(ram) = info.ram_display() {
+                    lines.push(Line::from(vec![
+                        Span::styled("  RAM        ", theme::hint()),
+                        Span::raw(ram),
+                    ]));
+                }
+                if let Some(storage) = info.storage_display() {
+                    lines.push(Line::from(vec![
+                        Span::styled("  Storage    ", theme::hint()),
+                        Span::raw(storage),
+                    ]));
+                }
+                if let Some(ver) = &info.perfetto_version {
+                    lines.push(Line::from(vec![
+                        Span::styled("  Perfetto   ", theme::hint()),
+                        Span::raw(ver),
+                    ]));
+                }
+
+                lines.push(Line::from(""));
+
+                // Installed apps
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("── Installed Apps ({}) ──", info.packages.len()),
+                        theme::hint(),
+                    ),
+                ]));
+                for pkg in &info.packages {
+                    lines.push(Line::from(vec![Span::raw("  "), Span::raw(pkg)]));
+                }
+
+                frame.render_widget(Paragraph::new(lines).block(block), area);
+            }
+            DetailState::Error(msg) => {
+                frame.render_widget(
+                    Paragraph::new(vec![Line::from(Span::styled(
+                        format!("  ✗ {msg}"),
+                        Style::default().fg(theme::ERR),
+                    ))])
+                    .block(block),
+                    area,
+                );
+            }
+        }
     }
 }
 

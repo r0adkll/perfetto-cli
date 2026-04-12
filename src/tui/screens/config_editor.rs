@@ -1,145 +1,199 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::collections::HashSet;
 
-use crate::tui::text_input;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::perfetto::{FillPolicy, Preset, TraceConfig, textproto};
+use crate::perfetto::config::ATRACE_CATEGORIES;
+use crate::perfetto::{TraceConfig, textproto};
 use crate::tui::chrome;
+use crate::tui::text_input;
 use crate::tui::theme;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Field {
-    Preset,
+// ---------------------------------------------------------------------------
+// Probe groups — match the sections from the perfetto recorder reference
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ProbeGroup {
+    Cpu,
+    Gpu,
+    Power,
+    Memory,
+    Android,
+    Advanced,
+}
+
+impl ProbeGroup {
+    const ALL: [ProbeGroup; 6] = [
+        Self::Cpu,
+        Self::Gpu,
+        Self::Power,
+        Self::Memory,
+        Self::Android,
+        Self::Advanced,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU",
+            Self::Gpu => "GPU",
+            Self::Power => "Power",
+            Self::Memory => "Memory",
+            Self::Android => "Android Apps & Svcs",
+            Self::Advanced => "Advanced",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Cpu => "Usage, scheduling, frequency, syscalls",
+            Self::Gpu => "Frequency, memory, work period",
+            Self::Power => "Battery drain, power rails, board voltages",
+            Self::Memory => "Meminfo, high-freq events, LMK, process stats",
+            Self::Android => "Atrace categories, logcat, frame timeline",
+            Self::Advanced => "Ftrace config, kernel symbols",
+        }
+    }
+
+    /// Sub-option labels displayed when the group is expanded.
+    fn sub_options(self) -> &'static [&'static str] {
+        match self {
+            Self::Cpu => &[
+                "Coarse CPU usage",
+                "Scheduling details",
+                "CPU frequency & idle",
+                "Syscalls",
+            ],
+            Self::Gpu => &["GPU frequency", "GPU memory", "GPU work period"],
+            Self::Power => &["Battery drain & power rails", "Board voltages"],
+            Self::Memory => &[
+                "Kernel meminfo",
+                "High-freq memory events",
+                "Low memory killer",
+                "Per-process stats",
+            ],
+            Self::Android => &[], // atrace categories + logcat + frame timeline handled specially
+            Self::Advanced => &[
+                "Resolve kernel symbols",
+                "Disable generic events",
+            ],
+        }
+    }
+
+    /// Descriptions for each sub-option, parallel to sub_options.
+    fn sub_descriptions(self) -> &'static [&'static str] {
+        match self {
+            Self::Cpu => &[
+                "Poll CPU time and fork stats via linux.sys_stats",
+                "Context switches, wakeups, blocked reasons",
+                "Frequency changes, C-state transitions, polling",
+                "Raw syscall enter/exit — high overhead",
+            ],
+            Self::Gpu => &[
+                "GPU frequency change events",
+                "GPU memory tracking + android.gpu.memory",
+                "GPU work period events",
+            ],
+            Self::Power => &[
+                "Battery counters + power rail polling via android.power",
+                "Regulator voltages, clock enables/disables",
+            ],
+            Self::Memory => &[
+                "Poll kernel meminfo via linux.sys_stats",
+                "mm_event, rss_stat, ion/dmabuf ftrace events",
+                "LMK kills + OOM score adjustments",
+                "Per-process memory stats polling",
+            ],
+            Self::Android => &[],
+            Self::Advanced => &[
+                "Resolve kernel symbols in ftrace events",
+                "Filter out generic ftrace events (recommended)",
+            ],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Editor items
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum EditorItem {
+    SectionHeader(&'static str),
+    NumberField { label: &'static str, target: NumberTarget },
+    CycleField { label: &'static str },
+    Toggle { label: &'static str, desc: &'static str, target: ToggleTarget },
+    TextField { label: &'static str, target: TextTarget },
+    GroupHeader { group: ProbeGroup },
+    SubToggle { group: ProbeGroup, index: usize, label: &'static str, desc: &'static str },
+    SubNumberField { label: &'static str, target: NumberTarget },
+    SubTextField { label: &'static str, target: TextTarget },
+    AtraceCategory { tag: &'static str, description: &'static str },
+    // Android-section specific toggles for logcat sub-options
+    AndroidToggle { label: &'static str, target: AndroidToggleTarget },
+}
+
+impl EditorItem {
+    fn is_selectable(&self) -> bool {
+        !matches!(self, EditorItem::SectionHeader(_))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NumberTarget {
     Duration,
     Buffer,
-    FillPolicy,
+    CpuCoarsePoll,
+    CpuFreqPoll,
+    PowerBatteryPoll,
+    MeminfoPoll,
+    ProcessStatsPoll,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ToggleTarget {
     ColdStart,
     AutoOpen,
     ComposeTracing,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AndroidToggleTarget {
+    Logcat,
+    LogCrash,
+    LogDefault,
+    LogEvents,
+    LogKernel,
+    LogSystem,
+    FrameTimeline,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TextTarget {
     LaunchActivity,
-    Categories,
-    Ftrace,
     AtraceApps,
+    ExtraFtraceEvents,
 }
 
-impl Field {
-    const ORDER: [Field; 11] = [
-        Field::Preset,
-        Field::Duration,
-        Field::Buffer,
-        Field::FillPolicy,
-        Field::ColdStart,
-        Field::AutoOpen,
-        Field::ComposeTracing,
-        Field::LaunchActivity,
-        Field::Categories,
-        Field::Ftrace,
-        Field::AtraceApps,
-    ];
-
-    fn next(self) -> Self {
-        let idx = Self::ORDER.iter().position(|f| *f == self).unwrap();
-        Self::ORDER[(idx + 1) % Self::ORDER.len()]
-    }
-    fn prev(self) -> Self {
-        let idx = Self::ORDER.iter().position(|f| *f == self).unwrap();
-        Self::ORDER[(idx + Self::ORDER.len() - 1) % Self::ORDER.len()]
-    }
-    fn label(self) -> &'static str {
-        match self {
-            Field::Preset => "Preset",
-            Field::Duration => "Duration (ms)",
-            Field::Buffer => "Buffer (KB)",
-            Field::FillPolicy => "Fill policy",
-            Field::ColdStart => "Cold start",
-            Field::AutoOpen => "Auto-open",
-            Field::ComposeTracing => "Compose tracing",
-            Field::LaunchActivity => "Launch activity",
-            Field::Categories => "Categories",
-            Field::Ftrace => "Ftrace events",
-            Field::AtraceApps => "Atrace apps",
-        }
-    }
-}
-
-struct Draft {
-    duration_ms: String,
-    buffer_size_kb: String,
-    fill_policy: FillPolicy,
-    cold_start: bool,
-    auto_open: bool,
-    compose_tracing: bool,
-    launch_activity: String,
-    categories: String,
-    ftrace_events: String,
-    atrace_apps: String,
-}
-
-impl Draft {
-    fn from_config(cfg: &TraceConfig) -> Self {
-        Self {
-            duration_ms: cfg.duration_ms.to_string(),
-            buffer_size_kb: cfg.buffer_size_kb.to_string(),
-            fill_policy: cfg.fill_policy,
-            cold_start: cfg.cold_start,
-            auto_open: cfg.auto_open,
-            compose_tracing: cfg.compose_tracing,
-            launch_activity: cfg.launch_activity.clone().unwrap_or_default(),
-            categories: cfg.categories.join(", "),
-            ftrace_events: cfg.ftrace_events.join(", "),
-            atrace_apps: cfg.atrace_apps.join(", "),
-        }
-    }
-
-    fn to_config(&self) -> Result<TraceConfig, String> {
-        let duration_ms = self
-            .duration_ms
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| "Duration must be a positive integer".to_string())?;
-        let buffer_size_kb = self
-            .buffer_size_kb
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| "Buffer size must be a positive integer".to_string())?;
-        let split = |s: &str| -> Vec<String> {
-            s.split(',')
-                .map(|x| x.trim().to_string())
-                .filter(|x| !x.is_empty())
-                .collect()
-        };
-        let launch = self.launch_activity.trim();
-        Ok(TraceConfig {
-            duration_ms,
-            buffer_size_kb,
-            fill_policy: self.fill_policy,
-            categories: split(&self.categories),
-            ftrace_events: split(&self.ftrace_events),
-            atrace_apps: split(&self.atrace_apps),
-            cold_start: self.cold_start,
-            auto_open: self.auto_open,
-            compose_tracing: self.compose_tracing,
-            launch_activity: if launch.is_empty() {
-                None
-            } else {
-                Some(launch.to_string())
-            },
-        })
-    }
-}
+// ---------------------------------------------------------------------------
+// Editor state
+// ---------------------------------------------------------------------------
 
 pub struct ConfigEditorScreen {
     session_id: Option<i64>,
     session_name: String,
-    draft: Draft,
-    preset: Preset,
-    field: Field,
-    error: Option<String>,
+    config: TraceConfig,
+    expanded: HashSet<ProbeGroup>,
+    items: Vec<EditorItem>,
+    cursor: usize,
+    scroll_offset: usize,
     preview_scroll: u16,
+    error: Option<String>,
+    editing: Option<String>,
 }
 
 pub enum EditorAction {
@@ -150,31 +204,200 @@ pub enum EditorAction {
 
 impl ConfigEditorScreen {
     pub fn new(session_id: Option<i64>, session_name: String, config: &TraceConfig) -> Self {
-        Self {
+        let mut screen = Self {
             session_id,
             session_name,
-            draft: Draft::from_config(config),
-            preset: Preset::Default,
-            field: Field::Preset,
-            error: None,
+            config: config.clone(),
+            expanded: HashSet::new(),
+            items: Vec::new(),
+            cursor: 0,
+            scroll_offset: 0,
             preview_scroll: 0,
-        }
+            error: None,
+            editing: None,
+        };
+        screen.rebuild_items();
+        screen
     }
 
     pub fn session_id(&self) -> Option<i64> {
         self.session_id
     }
 
+    // -----------------------------------------------------------------------
+    // Item list
+    // -----------------------------------------------------------------------
+
+    fn rebuild_items(&mut self) {
+        self.items.clear();
+
+        self.items.push(EditorItem::SectionHeader("── Recording ──"));
+        self.items.push(EditorItem::NumberField {
+            label: "Duration (ms)",
+            target: NumberTarget::Duration,
+        });
+        self.items.push(EditorItem::NumberField {
+            label: "Buffer (KB)",
+            target: NumberTarget::Buffer,
+        });
+        self.items.push(EditorItem::CycleField { label: "Fill policy" });
+        self.items.push(EditorItem::Toggle {
+            label: "Cold start",
+            desc: "force-stop + restart the app for a clean startup trace",
+            target: ToggleTarget::ColdStart,
+        });
+        self.items.push(EditorItem::Toggle {
+            label: "Auto-open",
+            desc: "open in ui.perfetto.dev when capture finishes",
+            target: ToggleTarget::AutoOpen,
+        });
+        self.items.push(EditorItem::Toggle {
+            label: "Compose tracing",
+            desc: "enable Jetpack Compose recomposition events",
+            target: ToggleTarget::ComposeTracing,
+        });
+        self.items.push(EditorItem::TextField {
+            label: "Launch activity",
+            target: TextTarget::LaunchActivity,
+        });
+
+        self.items.push(EditorItem::SectionHeader("── Probes ──"));
+        for group in ProbeGroup::ALL {
+            self.items.push(EditorItem::GroupHeader { group });
+            if !self.expanded.contains(&group) {
+                continue;
+            }
+
+            match group {
+                ProbeGroup::Android => {
+                    // Atrace categories
+                    for &(tag, description) in ATRACE_CATEGORIES {
+                        self.items.push(EditorItem::AtraceCategory { tag, description });
+                    }
+                    self.items.push(EditorItem::SubTextField {
+                        label: "Atrace apps",
+                        target: TextTarget::AtraceApps,
+                    });
+                    // Logcat
+                    self.items.push(EditorItem::AndroidToggle {
+                        label: "Logcat",
+                        target: AndroidToggleTarget::Logcat,
+                    });
+                    if self.config.android.logcat {
+                        for (label, target) in [
+                            ("  Crash", AndroidToggleTarget::LogCrash),
+                            ("  Default", AndroidToggleTarget::LogDefault),
+                            ("  Events", AndroidToggleTarget::LogEvents),
+                            ("  Kernel", AndroidToggleTarget::LogKernel),
+                            ("  System", AndroidToggleTarget::LogSystem),
+                        ] {
+                            self.items.push(EditorItem::AndroidToggle { label, target });
+                        }
+                    }
+                    // Frame timeline
+                    self.items.push(EditorItem::AndroidToggle {
+                        label: "Frame timeline",
+                        target: AndroidToggleTarget::FrameTimeline,
+                    });
+                }
+                _ => {
+                    let subs = group.sub_options();
+                    let descs = group.sub_descriptions();
+                    for (i, &label) in subs.iter().enumerate() {
+                        let desc = descs.get(i).copied().unwrap_or("");
+                        self.items.push(EditorItem::SubToggle {
+                            group,
+                            index: i,
+                            label,
+                            desc,
+                        });
+                        // Poll interval fields after the relevant toggle
+                        match (group, i) {
+                            (ProbeGroup::Cpu, 0) if self.config.cpu.coarse_usage => {
+                                self.items.push(EditorItem::SubNumberField {
+                                    label: "Poll interval (ms)",
+                                    target: NumberTarget::CpuCoarsePoll,
+                                });
+                            }
+                            (ProbeGroup::Cpu, 2) if self.config.cpu.freq_idle => {
+                                self.items.push(EditorItem::SubNumberField {
+                                    label: "Poll interval (ms)",
+                                    target: NumberTarget::CpuFreqPoll,
+                                });
+                            }
+                            (ProbeGroup::Power, 0) if self.config.power.battery_drain => {
+                                self.items.push(EditorItem::SubNumberField {
+                                    label: "Poll interval (ms)",
+                                    target: NumberTarget::PowerBatteryPoll,
+                                });
+                            }
+                            (ProbeGroup::Memory, 0) if self.config.memory.kernel_meminfo => {
+                                self.items.push(EditorItem::SubNumberField {
+                                    label: "Poll interval (ms)",
+                                    target: NumberTarget::MeminfoPoll,
+                                });
+                            }
+                            (ProbeGroup::Memory, 3) if self.config.memory.per_process_stats => {
+                                self.items.push(EditorItem::SubNumberField {
+                                    label: "Poll interval (ms)",
+                                    target: NumberTarget::ProcessStatsPoll,
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Advanced extra ftrace events
+                    if group == ProbeGroup::Advanced {
+                        self.items.push(EditorItem::SubTextField {
+                            label: "Extra ftrace events",
+                            target: TextTarget::ExtraFtraceEvents,
+                        });
+                    }
+                }
+            }
+        }
+
+        self.clamp_cursor();
+    }
+
+    fn clamp_cursor(&mut self) {
+        if self.items.is_empty() {
+            self.cursor = 0;
+            return;
+        }
+        if self.cursor >= self.items.len() {
+            self.cursor = self.items.len() - 1;
+        }
+        if !self.items[self.cursor].is_selectable() {
+            self.move_cursor(1);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Key handling
+    // -----------------------------------------------------------------------
+
     pub fn on_key(&mut self, key: KeyEvent) -> EditorAction {
         if key.kind != KeyEventKind::Press {
             return EditorAction::None;
         }
 
-        // Global first.
+        if self.editing.is_some() {
+            return self.handle_edit_key(key);
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => return EditorAction::Cancel,
             (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
-                return self.try_save();
+                return EditorAction::Save(self.config.clone());
+            }
+            (KeyCode::Down | KeyCode::Char('j'), _) | (KeyCode::Tab, _) => {
+                self.move_cursor(1);
+                return EditorAction::None;
+            }
+            (KeyCode::Up | KeyCode::Char('k'), _) | (KeyCode::BackTab, _) => {
+                self.move_cursor(-1);
+                return EditorAction::None;
             }
             (KeyCode::Char('['), _) => {
                 self.preview_scroll = self.preview_scroll.saturating_sub(1);
@@ -184,118 +407,332 @@ impl ConfigEditorScreen {
                 self.preview_scroll = self.preview_scroll.saturating_add(1);
                 return EditorAction::None;
             }
-            (KeyCode::Tab, _) | (KeyCode::Down, _) => {
-                self.field = self.field.next();
-                return EditorAction::None;
-            }
-            (KeyCode::BackTab, _) | (KeyCode::Up, _) => {
-                self.field = self.field.prev();
-                return EditorAction::None;
-            }
             _ => {}
         }
 
-        match self.field {
-            Field::Preset => self.handle_cycle_key(key, CycleTarget::Preset),
-            Field::FillPolicy => self.handle_cycle_key(key, CycleTarget::FillPolicy),
-            Field::ColdStart => self.handle_toggle_key(key, ToggleTarget::ColdStart),
-            Field::AutoOpen => self.handle_toggle_key(key, ToggleTarget::AutoOpen),
-            Field::ComposeTracing => self.handle_toggle_key(key, ToggleTarget::ComposeTracing),
-            Field::Duration => {
-                self.handle_text_key(key, TextTarget::Duration, TextMode::Numeric)
+        let item = self.items[self.cursor].clone();
+        match item {
+            EditorItem::CycleField { .. } => self.handle_cycle(key),
+            EditorItem::Toggle { target, .. } => self.handle_toggle(target),
+            EditorItem::GroupHeader { group } => self.handle_group_key(key, group),
+            EditorItem::SubToggle { group, index, .. } => self.handle_sub_toggle(key, group, index),
+            EditorItem::NumberField { target, .. } => {
+                self.start_editing_number(target);
             }
-            Field::Buffer => self.handle_text_key(key, TextTarget::Buffer, TextMode::Numeric),
-            Field::LaunchActivity => {
-                self.handle_text_key(key, TextTarget::LaunchActivity, TextMode::Any)
+            EditorItem::SubNumberField { target, .. } => match key.code {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if let Some(group) = self.enclosing_group() {
+                        self.collapse_group(group);
+                    }
+                }
+                _ => self.start_editing_number(target),
+            },
+            EditorItem::TextField { target, .. } => {
+                self.start_editing_text(target);
             }
-            Field::Categories => {
-                self.handle_text_key(key, TextTarget::Categories, TextMode::Any)
+            EditorItem::SubTextField { target, .. } => match key.code {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if let Some(group) = self.enclosing_group() {
+                        self.collapse_group(group);
+                    }
+                }
+                _ => self.start_editing_text(target),
+            },
+            EditorItem::AtraceCategory { tag, .. } => match key.code {
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    let s = tag.to_string();
+                    if !self.config.atrace_categories.remove(&s) {
+                        self.config.atrace_categories.insert(s);
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h') => self.collapse_group(ProbeGroup::Android),
+                _ => {}
+            },
+            EditorItem::AndroidToggle { target, .. } => match key.code {
+                KeyCode::Char(' ') | KeyCode::Enter => self.handle_android_toggle(target),
+                KeyCode::Left | KeyCode::Char('h') => self.collapse_group(ProbeGroup::Android),
+                _ => {}
+            },
+            _ => {}
+        }
+
+        EditorAction::None
+    }
+
+    fn handle_edit_key(&mut self, key: KeyEvent) -> EditorAction {
+        let Some(ref mut buffer) = self.editing else {
+            return EditorAction::None;
+        };
+        match text_input::apply(buffer, &key) {
+            text_input::TextAction::Submit | text_input::TextAction::Cancel => {
+                self.commit_edit();
             }
-            Field::Ftrace => self.handle_text_key(key, TextTarget::Ftrace, TextMode::Any),
-            Field::AtraceApps => {
-                self.handle_text_key(key, TextTarget::AtraceApps, TextMode::Any)
-            }
+            _ => {}
         }
         EditorAction::None
     }
 
-    fn handle_cycle_key(&mut self, key: KeyEvent, target: CycleTarget) {
-        match key.code {
-            KeyCode::Left | KeyCode::Char('h') => match target {
-                CycleTarget::Preset => self.apply_preset(self.preset.cycle_back()),
-                CycleTarget::FillPolicy => self.draft.fill_policy = self.draft.fill_policy.cycle(),
-            },
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => match target {
-                CycleTarget::Preset => self.apply_preset(self.preset.cycle_forward()),
-                CycleTarget::FillPolicy => self.draft.fill_policy = self.draft.fill_policy.cycle(),
-            },
+    fn start_editing_number(&mut self, target: NumberTarget) {
+        self.editing = Some(self.number_value(target).to_string());
+    }
+
+    fn start_editing_text(&mut self, target: TextTarget) {
+        self.editing = Some(match target {
+            TextTarget::LaunchActivity => self.config.launch_activity.clone().unwrap_or_default(),
+            TextTarget::AtraceApps => self.config.atrace_apps.join(", "),
+            TextTarget::ExtraFtraceEvents => self.config.advanced.extra_ftrace_events.join(", "),
+        });
+    }
+
+    fn commit_edit(&mut self) {
+        let Some(buffer) = self.editing.take() else { return };
+        let item = self.items[self.cursor].clone();
+        match item {
+            EditorItem::NumberField { target, .. } | EditorItem::SubNumberField { target, .. } => {
+                if let Ok(v) = buffer.trim().parse::<u32>() {
+                    self.set_number_value(target, v);
+                }
+            }
+            EditorItem::TextField { target, .. } | EditorItem::SubTextField { target, .. } => {
+                let trimmed = buffer.trim();
+                match target {
+                    TextTarget::LaunchActivity => {
+                        self.config.launch_activity =
+                            if trimmed.is_empty() { None } else { Some(trimmed.into()) };
+                    }
+                    TextTarget::AtraceApps => {
+                        self.config.atrace_apps = split_csv(trimmed);
+                    }
+                    TextTarget::ExtraFtraceEvents => {
+                        self.config.advanced.extra_ftrace_events = split_csv(trimmed);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
-    fn handle_toggle_key(&mut self, key: KeyEvent, target: ToggleTarget) {
+    fn handle_cycle(&mut self, key: KeyEvent) {
         if matches!(
             key.code,
-            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Left | KeyCode::Right
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') | KeyCode::Enter
+                | KeyCode::Char('h') | KeyCode::Char('l')
         ) {
-            let slot = match target {
-                ToggleTarget::ColdStart => &mut self.draft.cold_start,
-                ToggleTarget::AutoOpen => &mut self.draft.auto_open,
-                ToggleTarget::ComposeTracing => &mut self.draft.compose_tracing,
-            };
-            *slot = !*slot;
+            self.config.fill_policy = self.config.fill_policy.cycle();
         }
     }
 
-    fn handle_text_key(&mut self, key: KeyEvent, target: TextTarget, mode: TextMode) {
-        let buffer: &mut String = match target {
-            TextTarget::Duration => &mut self.draft.duration_ms,
-            TextTarget::Buffer => &mut self.draft.buffer_size_kb,
-            TextTarget::LaunchActivity => &mut self.draft.launch_activity,
-            TextTarget::Categories => &mut self.draft.categories,
-            TextTarget::Ftrace => &mut self.draft.ftrace_events,
-            TextTarget::AtraceApps => &mut self.draft.atrace_apps,
+    fn handle_toggle(&mut self, target: ToggleTarget) {
+        let slot = match target {
+            ToggleTarget::ColdStart => &mut self.config.cold_start,
+            ToggleTarget::AutoOpen => &mut self.config.auto_open,
+            ToggleTarget::ComposeTracing => &mut self.config.compose_tracing,
         };
-        let allow: fn(char) -> bool = match mode {
-            TextMode::Any => |_| true,
-            TextMode::Numeric => |c| c.is_ascii_digit(),
-        };
-        // Submit/Cancel from the helper are pre-intercepted at the top of
-        // `on_key` (Enter toggles/cycles, Esc cancels globally), so anything
-        // that bubbles up here is just an edit.
-        let _ = text_input::apply_filtered(buffer, &key, allow);
+        *slot = !*slot;
     }
 
-    fn apply_preset(&mut self, preset: Preset) {
-        self.preset = preset;
-        self.draft = Draft::from_config(&preset.config());
+    fn handle_android_toggle(&mut self, target: AndroidToggleTarget) {
+        let slot = match target {
+            AndroidToggleTarget::Logcat => &mut self.config.android.logcat,
+            AndroidToggleTarget::LogCrash => &mut self.config.android.log_crash,
+            AndroidToggleTarget::LogDefault => &mut self.config.android.log_default,
+            AndroidToggleTarget::LogEvents => &mut self.config.android.log_events,
+            AndroidToggleTarget::LogKernel => &mut self.config.android.log_kernel,
+            AndroidToggleTarget::LogSystem => &mut self.config.android.log_system,
+            AndroidToggleTarget::FrameTimeline => &mut self.config.android.frame_timeline,
+        };
+        *slot = !*slot;
+        // Expand/collapse logcat sub-options
+        if matches!(target, AndroidToggleTarget::Logcat) {
+            self.rebuild_items();
+        }
     }
 
-    fn try_save(&mut self) -> EditorAction {
-        match self.draft.to_config() {
-            Ok(cfg) => EditorAction::Save(cfg),
-            Err(e) => {
-                self.error = Some(e);
-                EditorAction::None
+    fn handle_group_key(&mut self, key: KeyEvent, group: ProbeGroup) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                if self.expanded.contains(&group) {
+                    self.expanded.remove(&group);
+                } else {
+                    self.expanded.insert(group);
+                }
+                self.rebuild_items();
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                if self.expanded.contains(&group) {
+                    self.expanded.remove(&group);
+                    self.rebuild_items();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_sub_toggle(&mut self, key: KeyEvent, group: ProbeGroup, index: usize) {
+        match key.code {
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                if let Some(slot) = self.sub_toggle_mut(group, index) {
+                    *slot = !*slot;
+                    self.rebuild_items();
+                }
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.collapse_group(group);
+            }
+            _ => {}
+        }
+    }
+
+    /// Find the nearest enclosing group by scanning upward from the cursor.
+    fn enclosing_group(&self) -> Option<ProbeGroup> {
+        for i in (0..=self.cursor).rev() {
+            if let EditorItem::GroupHeader { group } = &self.items[i] {
+                return Some(*group);
+            }
+        }
+        None
+    }
+
+    /// Collapse a group and move the cursor to its header row.
+    fn collapse_group(&mut self, group: ProbeGroup) {
+        if self.expanded.remove(&group) {
+            // Find the group header so the cursor lands there after collapse
+            let header_pos = self
+                .items
+                .iter()
+                .position(|item| matches!(item, EditorItem::GroupHeader { group: g } if *g == group));
+            self.rebuild_items();
+            if let Some(pos) = header_pos {
+                self.cursor = pos;
             }
         }
     }
 
-    fn preview_config(&self) -> TraceConfig {
-        self.draft.to_config().unwrap_or_else(|_| TraceConfig {
-            duration_ms: 0,
-            buffer_size_kb: 0,
-            fill_policy: self.draft.fill_policy,
-            categories: Vec::new(),
-            ftrace_events: Vec::new(),
-            atrace_apps: Vec::new(),
-            cold_start: self.draft.cold_start,
-            auto_open: self.draft.auto_open,
-            compose_tracing: self.draft.compose_tracing,
-            launch_activity: Some(self.draft.launch_activity.clone())
-                .filter(|s| !s.trim().is_empty()),
+    // -----------------------------------------------------------------------
+    // Config field access
+    // -----------------------------------------------------------------------
+
+    fn sub_toggle_mut(&mut self, group: ProbeGroup, index: usize) -> Option<&mut bool> {
+        Some(match (group, index) {
+            (ProbeGroup::Cpu, 0) => &mut self.config.cpu.coarse_usage,
+            (ProbeGroup::Cpu, 1) => &mut self.config.cpu.scheduling,
+            (ProbeGroup::Cpu, 2) => &mut self.config.cpu.freq_idle,
+            (ProbeGroup::Cpu, 3) => &mut self.config.cpu.syscalls,
+            (ProbeGroup::Gpu, 0) => &mut self.config.gpu.frequency,
+            (ProbeGroup::Gpu, 1) => &mut self.config.gpu.memory,
+            (ProbeGroup::Gpu, 2) => &mut self.config.gpu.work_period,
+            (ProbeGroup::Power, 0) => &mut self.config.power.battery_drain,
+            (ProbeGroup::Power, 1) => &mut self.config.power.board_voltages,
+            (ProbeGroup::Memory, 0) => &mut self.config.memory.kernel_meminfo,
+            (ProbeGroup::Memory, 1) => &mut self.config.memory.high_freq_events,
+            (ProbeGroup::Memory, 2) => &mut self.config.memory.low_memory_killer,
+            (ProbeGroup::Memory, 3) => &mut self.config.memory.per_process_stats,
+            (ProbeGroup::Advanced, 0) => &mut self.config.advanced.symbolize_ksyms,
+            (ProbeGroup::Advanced, 1) => &mut self.config.advanced.disable_generic_events,
+            _ => return None,
         })
     }
+
+    fn sub_toggle_value(&self, group: ProbeGroup, index: usize) -> bool {
+        match (group, index) {
+            (ProbeGroup::Cpu, 0) => self.config.cpu.coarse_usage,
+            (ProbeGroup::Cpu, 1) => self.config.cpu.scheduling,
+            (ProbeGroup::Cpu, 2) => self.config.cpu.freq_idle,
+            (ProbeGroup::Cpu, 3) => self.config.cpu.syscalls,
+            (ProbeGroup::Gpu, 0) => self.config.gpu.frequency,
+            (ProbeGroup::Gpu, 1) => self.config.gpu.memory,
+            (ProbeGroup::Gpu, 2) => self.config.gpu.work_period,
+            (ProbeGroup::Power, 0) => self.config.power.battery_drain,
+            (ProbeGroup::Power, 1) => self.config.power.board_voltages,
+            (ProbeGroup::Memory, 0) => self.config.memory.kernel_meminfo,
+            (ProbeGroup::Memory, 1) => self.config.memory.high_freq_events,
+            (ProbeGroup::Memory, 2) => self.config.memory.low_memory_killer,
+            (ProbeGroup::Memory, 3) => self.config.memory.per_process_stats,
+            (ProbeGroup::Advanced, 0) => self.config.advanced.symbolize_ksyms,
+            (ProbeGroup::Advanced, 1) => self.config.advanced.disable_generic_events,
+            _ => false,
+        }
+    }
+
+    fn number_value(&self, target: NumberTarget) -> u32 {
+        match target {
+            NumberTarget::Duration => self.config.duration_ms,
+            NumberTarget::Buffer => self.config.buffer_size_kb,
+            NumberTarget::CpuCoarsePoll => self.config.cpu.coarse_poll_ms,
+            NumberTarget::CpuFreqPoll => self.config.cpu.freq_poll_ms,
+            NumberTarget::PowerBatteryPoll => self.config.power.battery_poll_ms,
+            NumberTarget::MeminfoPoll => self.config.memory.meminfo_poll_ms,
+            NumberTarget::ProcessStatsPoll => self.config.memory.process_poll_ms,
+        }
+    }
+
+    fn set_number_value(&mut self, target: NumberTarget, v: u32) {
+        match target {
+            NumberTarget::Duration => self.config.duration_ms = v,
+            NumberTarget::Buffer => self.config.buffer_size_kb = v,
+            NumberTarget::CpuCoarsePoll => self.config.cpu.coarse_poll_ms = v,
+            NumberTarget::CpuFreqPoll => self.config.cpu.freq_poll_ms = v,
+            NumberTarget::PowerBatteryPoll => self.config.power.battery_poll_ms = v,
+            NumberTarget::MeminfoPoll => self.config.memory.meminfo_poll_ms = v,
+            NumberTarget::ProcessStatsPoll => self.config.memory.process_poll_ms = v,
+        }
+    }
+
+    fn group_has_any_enabled(&self, group: ProbeGroup) -> bool {
+        match group {
+            ProbeGroup::Cpu => {
+                self.config.cpu.coarse_usage
+                    || self.config.cpu.scheduling
+                    || self.config.cpu.freq_idle
+                    || self.config.cpu.syscalls
+            }
+            ProbeGroup::Gpu => {
+                self.config.gpu.frequency
+                    || self.config.gpu.memory
+                    || self.config.gpu.work_period
+            }
+            ProbeGroup::Power => {
+                self.config.power.battery_drain || self.config.power.board_voltages
+            }
+            ProbeGroup::Memory => {
+                self.config.memory.kernel_meminfo
+                    || self.config.memory.high_freq_events
+                    || self.config.memory.low_memory_killer
+                    || self.config.memory.per_process_stats
+            }
+            ProbeGroup::Android => {
+                !self.config.atrace_categories.is_empty()
+                    || self.config.android.logcat
+                    || self.config.android.frame_timeline
+            }
+            ProbeGroup::Advanced => {
+                !self.config.advanced.extra_ftrace_events.is_empty()
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Cursor
+    // -----------------------------------------------------------------------
+
+    fn move_cursor(&mut self, delta: i32) {
+        if self.items.is_empty() {
+            return;
+        }
+        let len = self.items.len() as i32;
+        let mut pos = self.cursor as i32;
+        loop {
+            pos = (pos + delta).rem_euclid(len);
+            if self.items[pos as usize].is_selectable() {
+                break;
+            }
+        }
+        self.cursor = pos as usize;
+    }
+
+    // -----------------------------------------------------------------------
+    // Render
+    // -----------------------------------------------------------------------
 
     pub fn render(&self, frame: &mut Frame) {
         let area = frame.area();
@@ -316,160 +753,223 @@ impl ConfigEditorScreen {
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(rows[1]);
 
-        let form = Paragraph::new(self.form_lines())
-            .block(Block::default().borders(Borders::ALL).title(" Fields "))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(form, cols[0]);
-
-        let preview_text = textproto::build(&self.preview_config());
-        let preview = Paragraph::new(preview_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Textproto preview "),
-            )
-            .scroll((self.preview_scroll, 0));
-        frame.render_widget(preview, cols[1]);
+        self.render_form(frame, cols[0]);
+        self.render_preview(frame, cols[1]);
 
         let footer = match &self.error {
             Some(msg) => Line::from(Span::styled(
                 format!(" ✗ {msg}"),
                 Style::default().fg(theme::ERR),
             )),
-            None => Line::from(vec![
-                Span::styled(" [Tab]", theme::title()),
-                Span::raw(" move  "),
-                Span::styled("[←/→]", theme::title()),
-                Span::raw(" cycle  "),
-                Span::styled("[Space]", theme::title()),
-                Span::raw(" toggle  "),
-                Span::styled("[ [ / ] ]", theme::title()),
-                Span::raw(" scroll preview  "),
-                Span::styled("[Ctrl-S]", theme::title()),
-                Span::raw(" save  "),
-                Span::styled("[Esc]", theme::title()),
-                Span::raw(" cancel"),
-            ]),
+            None => {
+                if self.editing.is_some() {
+                    Line::from(vec![
+                        Span::styled(" [Enter]", theme::title()),
+                        Span::raw(" save  "),
+                        Span::styled("[Esc]", theme::title()),
+                        Span::raw(" cancel  "),
+                        Span::styled("[Alt-⌫]", theme::title()),
+                        Span::raw(" word  "),
+                        Span::styled("[Ctrl-U]", theme::title()),
+                        Span::raw(" clear"),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled(" [↑/↓]", theme::title()),
+                        Span::raw(" move  "),
+                        Span::styled("[Space]", theme::title()),
+                        Span::raw(" toggle  "),
+                        Span::styled("[Enter]", theme::title()),
+                        Span::raw(" expand/edit  "),
+                        Span::styled("[Ctrl-S]", theme::title()),
+                        Span::raw(" save  "),
+                        Span::styled("[Esc]", theme::title()),
+                        Span::raw(" cancel"),
+                    ])
+                }
+            }
         };
         frame.render_widget(Paragraph::new(footer), rows[2]);
     }
 
-    fn form_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        for field in Field::ORDER {
-            let focused = field == self.field;
-            let arrow = if focused { "▶ " } else { "  " };
-            let label = format!("{:<16}", field.label());
-            let value = self.field_value(field);
-            let value_style = if focused {
-                Style::default()
-                    .fg(theme::ACCENT)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            let mut spans = vec![
-                Span::styled(arrow, Style::default().fg(theme::ACCENT)),
-                Span::styled(label, theme::hint()),
-                Span::raw("  "),
-                Span::styled(value, value_style),
-            ];
-            if focused {
-                spans.push(Span::styled("█", Style::default().fg(theme::ACCENT)));
-            }
-            lines.push(Line::from(spans));
+    fn render_form(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let inner_height = area.height.saturating_sub(2) as usize;
+        let scroll = {
+            let mut s = self.scroll_offset;
+            if self.cursor < s { s = self.cursor; }
+            else if self.cursor >= s + inner_height { s = self.cursor - inner_height + 1; }
+            s
+        };
+        let end = self.items.len().min(scroll + inner_height);
+        let mut lines: Vec<Line> = Vec::with_capacity(end - scroll);
+        for idx in scroll..end {
+            lines.push(self.render_item(&self.items[idx], idx == self.cursor));
         }
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  {}", self.preset.description()),
-            theme::hint(),
-        )));
-        lines
+        let form = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(" Config "));
+        frame.render_widget(form, area);
     }
 
-    fn field_value(&self, field: Field) -> String {
-        match field {
-            Field::Preset => format!("‹ {} ›", self.preset.label()),
-            Field::Duration => self.draft.duration_ms.clone(),
-            Field::Buffer => self.draft.buffer_size_kb.clone(),
-            Field::FillPolicy => format!("‹ {} ›", self.draft.fill_policy.label()),
-            Field::ColdStart => {
-                if self.draft.cold_start {
-                    "yes".into()
+    fn render_item(&self, item: &EditorItem, focused: bool) -> Line<'static> {
+        let arrow = if focused && item.is_selectable() {
+            Span::styled(" ▶ ", Style::default().fg(theme::ACCENT))
+        } else {
+            Span::raw("   ")
+        };
+        let fs = if focused {
+            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        match item {
+            EditorItem::SectionHeader(label) => Line::from(vec![
+                Span::raw(" "),
+                Span::styled(label.to_string(), Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+            ]),
+
+            EditorItem::NumberField { label, target } => {
+                let val = if focused && self.editing.is_some() {
+                    format!("{}█", self.editing.as_deref().unwrap_or(""))
                 } else {
-                    "no".into()
-                }
+                    self.number_value(*target).to_string()
+                };
+                Line::from(vec![arrow, Span::styled(format!("{label:<20}"), theme::hint()), Span::styled(val, fs)])
             }
-            Field::AutoOpen => {
-                if self.draft.auto_open {
-                    "yes".into()
-                } else {
-                    "no".into()
-                }
+
+            EditorItem::CycleField { label } => Line::from(vec![
+                arrow,
+                Span::styled(format!("{label:<20}"), theme::hint()),
+                Span::styled(format!("‹ {} ›", self.config.fill_policy.label()), fs),
+            ]),
+
+            EditorItem::Toggle { label, desc, target } => {
+                let val = match target {
+                    ToggleTarget::ColdStart => self.config.cold_start,
+                    ToggleTarget::AutoOpen => self.config.auto_open,
+                    ToggleTarget::ComposeTracing => self.config.compose_tracing,
+                };
+                let icon = if val { "☑" } else { "☐" };
+                Line::from(vec![
+                    arrow,
+                    Span::styled(format!("{icon} {label:<18}"), fs),
+                    Span::styled(*desc, theme::hint()),
+                ])
             }
-            Field::ComposeTracing => {
-                if self.draft.compose_tracing {
-                    "yes".into()
+
+            EditorItem::TextField { label, target } => {
+                let val = if focused && self.editing.is_some() {
+                    format!("{}█", self.editing.as_deref().unwrap_or(""))
                 } else {
-                    "no".into()
-                }
+                    match target {
+                        TextTarget::LaunchActivity => self.config.launch_activity.as_deref().unwrap_or("(auto)").into(),
+                        _ => String::new(),
+                    }
+                };
+                Line::from(vec![arrow, Span::styled(format!("{label:<20}"), theme::hint()), Span::styled(val, fs)])
             }
-            Field::LaunchActivity => {
-                if self.draft.launch_activity.trim().is_empty() {
-                    "(auto-resolve)".into()
-                } else {
-                    self.draft.launch_activity.clone()
-                }
+
+            EditorItem::GroupHeader { group } => {
+                let expanded = self.expanded.contains(group);
+                let has_active = self.group_has_any_enabled(*group);
+                let chevron = if expanded { "▼" } else { "▶" };
+                let status = if has_active { "active" } else { "—" };
+                let ss = if has_active { Style::default().fg(theme::OK) } else { Style::default().fg(theme::DIM) };
+                Line::from(vec![
+                    arrow,
+                    Span::styled(format!("{chevron} {:<20}", group.label()), fs),
+                    Span::styled(status, ss),
+                    Span::raw("  "),
+                    Span::styled(group.description(), theme::hint()),
+                ])
             }
-            Field::Categories => {
-                if self.draft.categories.is_empty() {
-                    "(none)".into()
-                } else {
-                    self.draft.categories.clone()
+
+            EditorItem::SubToggle { group, index, label, desc } => {
+                let val = self.sub_toggle_value(*group, *index);
+                let icon = if val { "☑" } else { "☐" };
+                let mut spans = vec![
+                    Span::raw("      "),
+                    Span::styled(format!("{icon} {label:<28}"), fs),
+                ];
+                if !desc.is_empty() {
+                    spans.push(Span::styled(*desc, theme::hint()));
                 }
+                Line::from(spans)
             }
-            Field::Ftrace => {
-                if self.draft.ftrace_events.is_empty() {
-                    "(none)".into()
+
+            EditorItem::SubNumberField { label, target } => {
+                let val = if focused && self.editing.is_some() {
+                    format!("{}█", self.editing.as_deref().unwrap_or(""))
                 } else {
-                    self.draft.ftrace_events.clone()
-                }
+                    self.number_value(*target).to_string()
+                };
+                Line::from(vec![
+                    Span::raw("        "),
+                    Span::styled(format!("{label:<26}"), theme::hint()),
+                    Span::styled(val, fs),
+                ])
             }
-            Field::AtraceApps => {
-                if self.draft.atrace_apps.is_empty() {
-                    "(none)".into()
+
+            EditorItem::AtraceCategory { tag, description } => {
+                let on = self.config.atrace_categories.contains(*tag);
+                let icon = if on { "☑" } else { "☐" };
+                Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(format!("{icon} {tag:<16}"), fs),
+                    Span::styled(format!("— {description}"), theme::hint()),
+                ])
+            }
+
+            EditorItem::AndroidToggle { label, target } => {
+                let val = match target {
+                    AndroidToggleTarget::Logcat => self.config.android.logcat,
+                    AndroidToggleTarget::LogCrash => self.config.android.log_crash,
+                    AndroidToggleTarget::LogDefault => self.config.android.log_default,
+                    AndroidToggleTarget::LogEvents => self.config.android.log_events,
+                    AndroidToggleTarget::LogKernel => self.config.android.log_kernel,
+                    AndroidToggleTarget::LogSystem => self.config.android.log_system,
+                    AndroidToggleTarget::FrameTimeline => self.config.android.frame_timeline,
+                };
+                let icon = if val { "☑" } else { "☐" };
+                Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(format!("{icon} {label}"), fs),
+                ])
+            }
+
+            EditorItem::SubTextField { label, target, .. } => {
+                let val = if focused && self.editing.is_some() {
+                    format!("{}█", self.editing.as_deref().unwrap_or(""))
                 } else {
-                    self.draft.atrace_apps.clone()
-                }
+                    let csv = match target {
+                        TextTarget::AtraceApps => self.config.atrace_apps.join(", "),
+                        TextTarget::ExtraFtraceEvents => self.config.advanced.extra_ftrace_events.join(", "),
+                        _ => String::new(),
+                    };
+                    if csv.is_empty() { "(none)".into() } else { csv }
+                };
+                Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(format!("{label:<24}"), theme::hint()),
+                    Span::styled(val, fs),
+                ])
             }
         }
     }
+
+    fn render_preview(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let txt = textproto::build(&self.config);
+        let preview = Paragraph::new(txt)
+            .block(Block::default().borders(Borders::ALL).title(" Textproto preview "))
+            .scroll((self.preview_scroll, 0))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(preview, area);
+    }
 }
 
-enum CycleTarget {
-    Preset,
-    FillPolicy,
-}
-
-enum ToggleTarget {
-    ColdStart,
-    AutoOpen,
-    ComposeTracing,
-}
-
-enum TextTarget {
-    Duration,
-    Buffer,
-    LaunchActivity,
-    Categories,
-    Ftrace,
-    AtraceApps,
-}
-
-enum TextMode {
-    Any,
-    Numeric,
+fn split_csv(s: &str) -> Vec<String> {
+    s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
 }

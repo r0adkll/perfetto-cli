@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use anyhow::Result;
+use crossterm::execute;
+use crossterm::terminal::SetTitle;
 use crossterm::event::{KeyEvent, KeyEventKind};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -82,6 +84,16 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut ratatui::Frame) {
+        let title = match &self.screen {
+            Screen::SessionsList => "Perfetto CLI".to_string(),
+            Screen::DevicePicker(_) => "Perfetto CLI — Devices".to_string(),
+            Screen::NewSession(_) => "Perfetto CLI — New Session".to_string(),
+            Screen::SessionDetail(d) => format!("Perfetto CLI — {}", d.session().name),
+            Screen::ConfigEditor(_) => "Perfetto CLI — Config".to_string(),
+            Screen::Capture(_) => "Perfetto CLI — Capturing".to_string(),
+        };
+        let _ = execute!(std::io::stdout(), SetTitle(title));
+
         match &mut self.screen {
             Screen::SessionsList => self.sessions_list.render(frame),
             Screen::DevicePicker(p) => p.render(frame),
@@ -100,6 +112,11 @@ impl App {
                 Screen::NewSession(w) => w.on_devices_loaded(result),
                 _ => {}
             },
+            AppEvent::DeviceInfoLoaded(result) => {
+                if let Screen::DevicePicker(p) = &mut self.screen {
+                    p.on_device_info_loaded(result);
+                }
+            }
             AppEvent::PackagesLoaded(result) => {
                 if let Screen::NewSession(w) = &mut self.screen {
                     w.on_packages_loaded(result);

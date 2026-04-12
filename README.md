@@ -1,70 +1,24 @@
-# perfetto-cli
+# 📊 perfetto-cli
 
-A Rust terminal UI for managing Android [Perfetto](https://perfetto.dev) trace
-sessions. Organize captures by target app, pick devices from a live adb list,
-tune your trace config with presets plus a live textproto preview, run
-captures with cold-start support and Ctrl-C cancellation, and open finished
-traces in `ui.perfetto.dev` with one key.
+A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces sessions on Android.
 
 ## Features
 
-- **Sessions** group captures by a target Android app on a specific device.
-  Everything lives on disk in a portable per-session folder plus a SQLite
-  index for queryability.
-- **Device picker** reads `adb devices -l`, remembers devices and lets you
-  nickname them so switching targets is cheap.
-- **Config editor** with four presets (Default, App startup, Frame timing,
-  CPU scheduling), numeric and multi-value fields, and a side-by-side
-  textproto preview that updates live as you edit.
-- **Capture engine** ported from Google's `record_android_trace` Python
-  script: pipes the textproto config into `perfetto --background --txt -c -`,
-  polls `/proc/<pid>` on-device, and pulls the resulting `.pftrace` into the
-  session folder.
-- **Cold-start flow**: force-stop → start perfetto → `am start` the target
-  activity → defer the Jetpack Compose enable broadcast until after launch so
-  it doesn't wake the process and ruin the trace window.
-- **Ctrl-C / Esc cancellation** during a capture sends `SIGTERM` to perfetto
-  on-device, waits for it to flush, and pulls the partial trace so no work is
-  thrown away.
-- **Jetpack Compose tracing** via the
-  `androidx.tracing.perfetto.action.ENABLE_TRACING` broadcast and the
-  `track_event` data source.
-- **Per-app atrace injection** — the session's `package_name` is auto-added
-  to `atrace_apps` so `android.os.Trace.beginSection()` calls from the app
-  actually land in the trace (they're no-ops without it).
-- **Explicit launch activity override** for apps where `monkey` picks the
-  wrong LAUNCHER activity (LeakCanary, multi-launcher modules, etc.).
-- **Trace management** — rename (with automatic `.pftrace` suffix handling),
-  tag, delete, and filter by tag. Rename input rewrites spaces to dashes for
-  filesystem-friendly names.
-- **Package name suggestions** in the new-session wizard: recent packages
-  from your session history, merged with a live `pm list packages -3` query
-  for the currently-highlighted online device. Filter by typing, select with
-  Tab + arrow keys.
-- **ui.perfetto.dev handoff** — spawns a short-lived `tiny_http` server on
-  `127.0.0.1:9001` with the exact CORS headers the Perfetto UI expects,
-  serves one trace, then drops the listener so the port is released.
-- **Auto-open on completion** (session-level toggle) — successful captures
-  open straight into the Perfetto UI.
-- **Two-pane session detail** — on terminals ≥ 120 columns, the session
-  screen shows the trace list on the left and the generated textproto on
-  the right.
+- 📱 **Device picker** — live `adb devices` with nicknames and memory
+- 📦 **Session management** — group captures by app + device, stored in portable folders
+- ⚙️ **Config editor** — grouped probe toggles mirroring [ui.perfetto.dev](https://ui.perfetto.dev/#!/record) with a live textproto preview
+- 🎬 **Capture engine** — ported from Google's `record_android_trace`, with `Ctrl-C` cancellation and partial-trace pull
+- 🚀 **Cold-start support** — force-stop, trace, launch, with deferred Compose broadcast
+- 🎨 **Compose tracing** — `track_event` data source + `ENABLE_TRACING` broadcast
+- 🏷️ **Trace management** — rename, tag, delete, filter by tag
+- 🌐 **ui.perfetto.dev handoff** — one-key open via a short-lived local HTTP server
 
 ## Requirements
 
-- Rust 1.90+ (edition 2024)
 - `adb` on `PATH`
 - Android device on API 29+ with USB debugging enabled
-- A terminal with 256-color / truecolor support (for the accent palette)
 
 ## Install
-
-### Prebuilt binaries
-
-Each tagged release publishes archives for macOS (Intel + Apple Silicon),
-Linux (x86_64 + aarch64), and Windows (x86_64) to the
-[GitHub Releases](https://github.com/r0adkll/perfetto-cli/releases) page,
-along with a shell installer and a Homebrew formula.
 
 **Shell installer (macOS / Linux):**
 
@@ -74,195 +28,106 @@ curl --proto '=https' --tlsv1.2 -LsSf \
   | sh
 ```
 
-The installer drops the binary into `~/.cargo/bin` (or `$CARGO_HOME/bin`) and
-prints any `PATH` tweaks you need.
-
-**Homebrew (macOS / Linux):**
+**Homebrew:**
 
 ```bash
 brew install r0adkll/tap/perfetto-cli
 ```
 
-**Windows:**
+**Windows:** grab `perfetto-cli-x86_64-pc-windows-msvc.zip` from the [latest release](https://github.com/r0adkll/perfetto-cli/releases).
 
-Grab `perfetto-cli-x86_64-pc-windows-msvc.zip` from the latest release, unzip
-it, and drop `perfetto-cli.exe` somewhere on your `PATH`.
-
-### From source
+**From source:**
 
 ```bash
-# run from a checkout
-cargo run --release
-
-# or install into ~/.cargo/bin from a checkout
 cargo install --path .
 ```
 
-## Getting started
-
-1. Launch: `perfetto-cli`
-2. Press `d` to open the **Devices** screen, confirm your device shows up as
-   `online`, and optionally press `n` to give it a nickname. `Esc` back.
-3. Press `n` on the sessions list to open the **New session** wizard.
-   - **Name** — any human-readable label.
-   - **Package** — start typing and the **Suggestions** panel below will
-     filter down recent packages + installed apps from the highlighted
-     online device. `Tab` into the list, arrow keys to pick, `Enter` to
-     fill.
-   - **Device** — pick from the detected online devices.
-   - `Tab` to the **Create session** button and press `Enter`.
-4. On the session detail screen:
-   - `c` — run a capture
-   - `o` / `Enter` — open the selected trace in `ui.perfetto.dev`
-   - `e` — edit the trace config
-   - `r` — rename a trace (extension is handled automatically)
-   - `t` — tag a trace (comma-separated)
-   - `f` — cycle the tag filter
-   - `x` / `Delete` — delete a trace (with confirmation)
-
-## Configuration
-
-Everything perfetto-cli stores lives under `~/.config/perfetto-cli/` on every
-platform:
+## Quick start
 
 ```
-~/.config/perfetto-cli/
-├── perfetto-cli.db          # SQLite index (sessions, devices, traces, tags)
-├── logs/                    # rotating daily logs (never stdout while TUI is up)
-└── sessions/
-    └── <session-slug>/
-        ├── session.json     # self-describing snapshot (portable w/o the DB)
-        └── traces/
-            └── 2026-04-11_14-30-22.pftrace
+perfetto-cli
 ```
 
-Session folders are **date-agnostic** — a session can span multiple capture
-days without drifting from its creation date.
+1. `d` — confirm your device is online, optionally nickname it
+2. `n` — create a session (name, package with suggestions, device)
+3. `e` — edit the trace config (probe toggles, atrace categories, poll intervals)
+4. `c` — capture a trace
+5. `o` — open it in ui.perfetto.dev
 
-## Trace configuration
+## Config editor
 
-Press `e` on any session to open the config editor. Fields (top to bottom):
+Press `e` on any session. The editor mirrors the [perfetto recorder UI](https://ui.perfetto.dev/#!/record) sections:
 
-| Field | Notes |
+| Section | What it controls |
 |---|---|
-| **Preset** | Cycle with `←/→`. Rewrites the other fields to match. |
-| **Duration (ms)** | Numeric only. |
-| **Buffer (KB)** | Numeric only. |
-| **Fill policy** | `ring buffer` / `discard`, cycle with `←/→`. |
-| **Cold start** | Toggle with `Space`. Force-stops + restarts the app for a clean startup trace. |
-| **Auto-open** | Toggle. Opens in `ui.perfetto.dev` on successful capture. |
-| **Compose tracing** | Toggle. Fires the androidx enable broadcast; warm-path fires before perfetto starts, cold-path defers until after `am start`. |
-| **Launch activity** | Optional override like `.MainActivity` or `com.example/.MainActivity`. Leave blank to fall back to `monkey`. |
-| **Categories** | Comma-separated atrace categories (`sched, freq, gfx, …`). |
-| **Ftrace events** | Comma-separated ftrace event paths (`power/cpu_frequency, …`). |
-| **Atrace apps** | Extra packages to enable app-level tracing for. The session's own package is added automatically. |
+| **Recording** | Duration, buffer size, fill policy, cold start, auto-open, Compose tracing, launch activity |
+| **CPU** | Coarse usage polling, scheduling details, frequency/idle, syscalls |
+| **GPU** | Frequency, memory, work period |
+| **Power** | Battery drain + power rails, board voltages |
+| **Memory** | Kernel meminfo, high-freq events, LMK, per-process stats |
+| **Android Apps** | 38 atrace categories (23 default), logcat buffers, frame timeline, atrace apps |
+| **Advanced** | Kernel symbol resolution, generic events, extra ftrace events |
 
-`Ctrl-S` saves, `Esc` cancels. Right-hand panel shows the rendered textproto
-live as you edit.
+Each probe group expands to show sub-options with descriptions. Toggles that have a poll interval reveal a number field when enabled. The right panel shows the generated textproto updating live.
+
+`Ctrl-S` saves. `Esc` cancels. `Space` toggles. `Enter` expands groups or starts editing fields. `←` collapses from inside a group.
 
 ## Text input shortcuts
 
-Every text field in the app runs through one shared helper:
-
 | Shortcut | Effect |
 |---|---|
-| `Backspace` | delete previous character |
-| `Alt-⌫` / `Ctrl-W` | delete previous word (boundaries: whitespace, `-`, `_`) |
-| `Cmd-⌫` / `Ctrl-U` | clear the buffer |
-| `Enter` | submit / advance |
-| `Esc` | cancel |
+| `Backspace` | Delete character |
+| `Alt-⌫` / `Ctrl-W` | Delete word (`-` and `_` are boundaries) |
+| `Cmd-⌫` / `Ctrl-U` | Clear buffer |
+
+## Data storage
+
+```
+~/.config/perfetto-cli/
+├── perfetto-cli.db        # SQLite (sessions, devices, traces, tags)
+├── logs/                  # Rotating daily logs
+└── sessions/
+    └── <slug>/
+        ├── session.json   # Portable session snapshot
+        └── traces/
+            └── 2026-04-12_09-15-30.pftrace
+```
 
 ## Project layout
 
 ```
 src/
-├── adb/                    # async adb wrapper + device parser
-├── perfetto/               # config model, presets, textproto builder, capture engine
-├── session/                # session struct + filesystem lifecycle
-├── db/                     # rusqlite DAOs (devices, sessions, traces, tags)
-├── tui/
-│   ├── chrome.rs           # shared header + home banner
-│   ├── text_input.rs       # shared line-edit helper with edit shortcuts
-│   ├── event.rs            # async event bus
-│   └── screens/            # one file per screen
-├── ui_server.rs            # tiny_http server for ui.perfetto.dev handoff
-├── app.rs                  # top-level state machine + routing
-└── main.rs
+├── adb/          # Async adb wrapper + device parser
+├── perfetto/     # Config model, textproto builder, capture engine
+├── session/      # Session struct + filesystem lifecycle
+├── db/           # SQLite DAOs (devices, sessions, traces, tags)
+├── tui/          # ratatui screens, chrome, text input, event bus
+├── ui_server.rs  # tiny_http for ui.perfetto.dev handoff
+├── app.rs        # Screen router + state machine
+└── main.rs       # Entry point
 ```
 
 ## Testing
 
 ```bash
-cargo test
+cargo test   # 34 tests
 ```
-
-Unit tests cover the `adb devices -l` parser, the textproto builder (including
-escape sequences and the `track_event` gate), capture helpers (`parse_pid`,
-`build_component`), the slugify function for session folders, and the shared
-text-input helper's edit shortcuts.
 
 ## Releasing
 
-Releases are driven by [cargo-dist](https://github.com/axodotdev/cargo-dist).
-A tag push triggers `.github/workflows/release.yml`, which cross-builds every
-target in `dist-workspace.toml`, uploads archives + checksums to a new GitHub
-Release, generates a shell installer, and publishes a Homebrew formula to
-[`r0adkll/homebrew-tap`](https://github.com/r0adkll/homebrew-tap).
-
-### Cut a release
+Tag-driven via [cargo-dist](https://github.com/axodotdev/cargo-dist). Builds for macOS (Intel + ARM), Linux (x86_64 + aarch64), Windows (x86_64).
 
 ```bash
-# 1. Bump the version in Cargo.toml + refresh the lockfile
-cargo set-version 0.1.1            # or hand-edit Cargo.toml
-cargo check                         # updates Cargo.lock
-
-# 2. Commit the bump
-git add Cargo.toml Cargo.lock
-git commit -m "Release v0.1.1"
-
-# 3. Tag and push
-git tag v0.1.1
-git push origin main v0.1.1
+# bump version, commit, tag, push
+git tag v0.2.0 && git push origin main v0.2.0
 ```
 
-The matrix build kicks off automatically. When every target finishes the
-Release is published with:
-
-- Per-target archives (`.tar.xz` on Unix, `.zip` on Windows)
-- `sha256.txt` checksums and `source.tar.gz`
-- `perfetto-cli-installer.sh` (the curl-pipe-sh installer)
-- A PR or direct push to the Homebrew tap with the updated formula
-
-### Dry-run locally
-
-```bash
-# See what the pipeline *would* build without pushing anything
-dist plan
-
-# Actually build one target locally to catch errors before tagging
-dist build --artifacts=local --target aarch64-apple-darwin
-```
-
-### Secrets
-
-The Homebrew publish step needs a Personal Access Token with write access to
-`r0adkll/homebrew-tap`. Store it as the `HOMEBREW_TAP_TOKEN` repo secret on
-this repository. The default `GITHUB_TOKEN` only has access to the current
-repo and can't push to the tap.
-
-### Upgrading cargo-dist
-
-Bump `cargo-dist-version` in `dist-workspace.toml`, then regenerate the
-workflow so the tool version and the workflow stay in sync:
-
-```bash
-dist generate
-git add dist-workspace.toml .github/workflows/release.yml
-git commit -m "Upgrade cargo-dist to vX.Y.Z"
-```
+Publishes archives, checksums, a shell installer, and a Homebrew formula to [`r0adkll/homebrew-tap`](https://github.com/r0adkll/homebrew-tap).
 
 ## Credits
 
-Capture mechanics are a direct port of Google's
-[`record_android_trace`](https://github.com/google/perfetto/blob/main/tools/record_android_trace)
-Python script. Perfetto itself is Apache 2.0 licensed.
+Capture engine ported from Google's [`record_android_trace`](https://github.com/google/perfetto/blob/main/tools/record_android_trace). Perfetto is Apache 2.0 licensed.
+
+## License
+
+[MIT](LICENSE)

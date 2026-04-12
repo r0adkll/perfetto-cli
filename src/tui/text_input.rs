@@ -79,6 +79,7 @@ pub fn apply(buffer: &mut String, key: &KeyEvent) -> TextAction {
 /// Like `apply`, but only passes printable characters through `allow_char`.
 /// Edit shortcuts (backspace, Ctrl-W, Ctrl-U, Alt-⌫, Cmd-⌫) always run — only
 /// plain character insertion is filtered. Use this for numeric-only fields.
+#[allow(dead_code)]
 pub fn apply_filtered(
     buffer: &mut String,
     key: &KeyEvent,
