@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Expanded Suggestions, Config, and Startup Commands panels in the new session wizard (6→8, 5→7, 5→7 rows) for better visibility
+
 ## [0.3.0] - 2026-04-12
 
 ### Added

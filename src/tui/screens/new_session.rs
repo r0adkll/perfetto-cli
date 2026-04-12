@@ -580,13 +580,13 @@ impl NewSessionScreen {
         let form = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Length(6),
-                Constraint::Length(5),
-                Constraint::Length(5),
-                Constraint::Length(3),
-                Constraint::Min(0),
+                Constraint::Length(3),  // name
+                Constraint::Length(3),  // package
+                Constraint::Length(8),  // suggestions
+                Constraint::Length(7),  // config
+                Constraint::Length(7),  // commands
+                Constraint::Length(3),  // submit
+                Constraint::Min(0),    // spacer
             ])
             .split(panes[0]);
 
