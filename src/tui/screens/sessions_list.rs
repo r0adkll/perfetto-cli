@@ -21,7 +21,6 @@ pub struct SessionsListScreen {
 pub enum SessionsAction {
     None,
     Quit,
-    OpenDevicePicker,
     OpenConfigList,
     OpenCommandSets,
     OpenThemePicker,
@@ -82,7 +81,6 @@ impl SessionsListScreen {
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => SessionsAction::Quit,
-            KeyCode::Char('d') => SessionsAction::OpenDevicePicker,
             KeyCode::Char('g') => SessionsAction::OpenConfigList,
             KeyCode::Char('s') => SessionsAction::OpenCommandSets,
             KeyCode::Char('t') => SessionsAction::OpenThemePicker,
@@ -231,8 +229,6 @@ impl SessionsListScreen {
                 Span::raw(" open  "),
                 Span::styled("[x]", theme::title()),
                 Span::raw(" delete  "),
-                Span::styled("[d]", theme::title()),
-                Span::raw(" devices  "),
                 Span::styled("[g]", theme::title()),
                 Span::raw(" configs  "),
                 Span::styled("[s]", theme::title()),

@@ -685,17 +685,32 @@ impl NewSessionScreen {
                     let label = e.nickname.clone().unwrap_or_else(|| {
                         e.model.clone().unwrap_or_else(|| "Android device".into())
                     });
-                    let state_str = match e.state {
-                        EntryState::Online => "●",
-                        EntryState::Offline => "○",
-                        EntryState::Unauthorized => "⚠",
-                        EntryState::Other(_) => "?",
-                        EntryState::NotConnected => "·",
+                    let (badge, badge_style) = match &e.state {
+                        EntryState::Online => (
+                            "● online    ",
+                            Style::default().fg(theme::ok()),
+                        ),
+                        EntryState::Offline => (
+                            "○ offline   ",
+                            Style::default().fg(theme::dim()),
+                        ),
+                        EntryState::Unauthorized => (
+                            "⚠ unauth    ",
+                            Style::default().fg(theme::warn()),
+                        ),
+                        EntryState::Other(_) => (
+                            "? other     ",
+                            Style::default().fg(theme::warn()),
+                        ),
+                        EntryState::NotConnected => (
+                            "· remembered",
+                            Style::default().fg(theme::dim()),
+                        ),
                     };
                     ListItem::new(Line::from(vec![
                         Span::raw("  "),
-                        Span::styled(state_str, theme::hint()),
-                        Span::raw(" "),
+                        Span::styled(badge, badge_style),
+                        Span::raw("  "),
                         Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
                     ]))
                 })
@@ -735,10 +750,10 @@ impl NewSessionScreen {
                     Span::styled("  Android:  ", theme::hint()),
                     Span::raw(info.android_display()),
                 ]));
-                if let Some(cpu) = &info.cpu_abi {
+                if let Some(cpu) = info.cpu_display() {
                     lines.push(Line::from(vec![
                         Span::styled("  CPU:      ", theme::hint()),
-                        Span::raw(cpu.clone()),
+                        Span::raw(cpu),
                     ]));
                 }
                 if let Some(ram) = info.ram_bytes {

@@ -70,11 +70,10 @@ pub struct DeviceInfo {
     pub android_version: Option<String>,
     pub sdk_version: Option<String>,
     pub cpu_abi: Option<String>,
+    pub cpu_cores: Option<u32>,
+    pub cpu_max_freq_mhz: Option<u32>,
     pub ram_bytes: Option<u64>,
-    pub storage_total_bytes: Option<u64>,
-    pub storage_used_bytes: Option<u64>,
     pub perfetto_version: Option<String>,
-    pub packages: Vec<String>,
 }
 
 impl DeviceInfo {
@@ -88,18 +87,21 @@ impl DeviceInfo {
         }
     }
 
-    pub fn ram_display(&self) -> Option<String> {
-        self.ram_bytes.map(format_bytes)
-    }
-
-    pub fn storage_display(&self) -> Option<String> {
-        self.storage_total_bytes.map(|total| {
-            let total_str = format_bytes(total);
-            match self.storage_used_bytes {
-                Some(used) => format!("{total_str} ({} used)", format_bytes(used)),
-                None => total_str,
+    /// e.g. "arm64-v8a • 8 cores @ 2.84 GHz"
+    pub fn cpu_display(&self) -> Option<String> {
+        let abi = self.cpu_abi.as_deref()?;
+        let mut parts = vec![abi.to_string()];
+        if let Some(cores) = self.cpu_cores {
+            parts.push(format!("{cores} cores"));
+        }
+        if let Some(freq) = self.cpu_max_freq_mhz {
+            if freq >= 1000 {
+                parts.push(format!("{:.2} GHz", freq as f64 / 1000.0));
+            } else {
+                parts.push(format!("{freq} MHz"));
             }
-        })
+        }
+        Some(parts.join(" • "))
     }
 }
 
@@ -115,24 +117,30 @@ pub async fn query_device_info(serial: &str) -> Result<DeviceInfo> {
     let sdk_version = props.get("ro.build.version.sdk").cloned();
     let cpu_abi = props.get("ro.product.cpu.abi").cloned();
 
+    let cpu_cores = run(serial, &["shell", "nproc"])
+        .await
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok());
+
+    // Read max frequency across all cores (highest policy max).
+    let cpu_max_freq_mhz = run(
+        serial,
+        &["shell", "cat", "/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq"],
+    )
+    .await
+    .ok()
+    .and_then(|s| parse_max_cpu_freq(&s));
+
     let ram_bytes = run(serial, &["shell", "cat", "/proc/meminfo"])
         .await
         .ok()
         .and_then(|s| parse_memtotal(&s));
-
-    let (storage_total_bytes, storage_used_bytes) = run(serial, &["shell", "df", "/data"])
-        .await
-        .ok()
-        .map(|s| parse_df(&s))
-        .unwrap_or((None, None));
 
     let perfetto_version = run(serial, &["shell", "perfetto", "--version"])
         .await
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-
-    let packages = list_installed_packages(serial).await.unwrap_or_default();
 
     Ok(DeviceInfo {
         serial: serial.to_string(),
@@ -141,11 +149,10 @@ pub async fn query_device_info(serial: &str) -> Result<DeviceInfo> {
         android_version,
         sdk_version,
         cpu_abi,
+        cpu_cores,
+        cpu_max_freq_mhz,
         ram_bytes,
-        storage_total_bytes,
-        storage_used_bytes,
         perfetto_version,
-        packages,
     })
 }
 
@@ -170,6 +177,15 @@ fn parse_getprop(raw: &str) -> HashMap<String, String> {
     map
 }
 
+/// Parse the highest value from `cpuinfo_max_freq` output (one KHz value per
+/// line, one per CPU core). Returns the max converted to MHz.
+fn parse_max_cpu_freq(raw: &str) -> Option<u32> {
+    raw.lines()
+        .filter_map(|line| line.trim().parse::<u64>().ok())
+        .max()
+        .map(|khz| (khz / 1000) as u32)
+}
+
 fn parse_memtotal(raw: &str) -> Option<u64> {
     for line in raw.lines() {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
@@ -178,28 +194,6 @@ fn parse_memtotal(raw: &str) -> Option<u64> {
         }
     }
     None
-}
-
-fn parse_df(raw: &str) -> (Option<u64>, Option<u64>) {
-    for line in raw.lines().skip(1) {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 4 {
-            let total = parts[1].parse::<u64>().ok().map(|kb| kb * 1024);
-            let used = parts[2].parse::<u64>().ok().map(|kb| kb * 1024);
-            return (total, used);
-        }
-    }
-    (None, None)
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GB: u64 = 1024 * 1024 * 1024;
-    const MB: u64 = 1024 * 1024;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else {
-        format!("{:.0} MB", bytes as f64 / MB as f64)
-    }
 }
 
 fn android_codename(sdk: &str) -> Option<&'static str> {
@@ -254,30 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_df() {
-        let raw = "Filesystem     1K-blocks     Used Available Use% Mounted on\n\
-                   /dev/block/dm-9 119267328 52436480  66830848  44% /data\n";
-        let (total, used) = parse_df(raw);
-        assert_eq!(total, Some(119267328 * 1024));
-        assert_eq!(used, Some(52436480 * 1024));
-    }
-
-    #[test]
-    fn parses_df_empty() {
-        assert_eq!(parse_df(""), (None, None));
-    }
-
-    #[test]
-    fn format_bytes_gb() {
-        assert_eq!(format_bytes(8 * 1024 * 1024 * 1024), "8.0 GB");
-    }
-
-    #[test]
-    fn format_bytes_mb() {
-        assert_eq!(format_bytes(512 * 1024 * 1024), "512 MB");
-    }
-
-    #[test]
     fn codename_lookup() {
         assert_eq!(android_codename("34"), Some("Upside Down Cake"));
         assert_eq!(android_codename("31"), Some("Snow Cone"));
@@ -293,30 +263,51 @@ mod tests {
             android_version: Some("14".into()),
             sdk_version: Some("34".into()),
             cpu_abi: None,
+            cpu_cores: None,
+            cpu_max_freq_mhz: None,
             ram_bytes: None,
-            storage_total_bytes: None,
-            storage_used_bytes: None,
             perfetto_version: None,
-            packages: vec![],
         };
         assert_eq!(info.android_display(), "14 (API 34, Upside Down Cake)");
     }
 
     #[test]
-    fn device_info_storage_display() {
+    fn cpu_display_full() {
         let info = DeviceInfo {
             serial: String::new(),
             device_name: None,
             manufacturer: None,
             android_version: None,
             sdk_version: None,
-            cpu_abi: None,
+            cpu_abi: Some("arm64-v8a".into()),
+            cpu_cores: Some(8),
+            cpu_max_freq_mhz: Some(2840),
             ram_bytes: None,
-            storage_total_bytes: Some(119267328 * 1024),
-            storage_used_bytes: Some(52436480 * 1024),
             perfetto_version: None,
-            packages: vec![],
         };
-        assert_eq!(info.storage_display().unwrap(), "113.7 GB (50.0 GB used)");
+        assert_eq!(info.cpu_display().unwrap(), "arm64-v8a • 8 cores • 2.84 GHz");
+    }
+
+    #[test]
+    fn cpu_display_abi_only() {
+        let info = DeviceInfo {
+            serial: String::new(),
+            device_name: None,
+            manufacturer: None,
+            android_version: None,
+            sdk_version: None,
+            cpu_abi: Some("x86_64".into()),
+            cpu_cores: None,
+            cpu_max_freq_mhz: None,
+            ram_bytes: None,
+            perfetto_version: None,
+        };
+        assert_eq!(info.cpu_display().unwrap(), "x86_64");
+    }
+
+    #[test]
+    fn parse_max_cpu_freq_picks_highest() {
+        let raw = "1804800\n2841600\n2841600\n1804800\n";
+        assert_eq!(parse_max_cpu_freq(raw), Some(2841));
     }
 }

@@ -79,13 +79,6 @@ pub fn home_banner() -> Vec<Line<'static>> {
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Press [d] to manage your devices",
-        Style::default()
-            .fg(theme::accent_secondary())
-            .add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
         "Press [s] to manage your startup commands",
         Style::default()
             .fg(theme::accent_secondary())

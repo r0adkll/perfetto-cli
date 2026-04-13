@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Removed global device selection — the header device indicator and dedicated device picker screen are gone; device selection now lives exclusively in the per-session new-session wizard
+- New session device list now shows colored status badges with labels (`● online`, `○ offline`, `⚠ unauth`, `· remembered`) with aligned columns
+- CPU info in the device details pane now shows core count and max clock speed (e.g. `arm64-v8a • 8 cores • 2.84 GHz`)
+
 ### Fixed
 - Startup commands: strip blank or default-value `nameOrPath` args before sending to ui.perfetto.dev so the UI falls back to its own defaults instead of receiving empty strings
 

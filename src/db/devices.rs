@@ -62,15 +62,4 @@ impl Database {
         Ok(nick)
     }
 
-    pub fn set_device_nickname(&self, serial: &str, nickname: Option<&str>) -> Result<()> {
-        let conn = self.lock();
-        // Ensure row exists so we can set a nickname before the device is ever seen live.
-        let now = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO devices (serial, nickname, last_seen) VALUES (?1, ?2, ?3)
-             ON CONFLICT(serial) DO UPDATE SET nickname = excluded.nickname",
-            params![serial, nickname, now],
-        )?;
-        Ok(())
-    }
 }
