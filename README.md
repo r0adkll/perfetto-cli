@@ -4,6 +4,19 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 
 ![](.github/art/demo.gif)
 
+<details>
+<summary>Screenshots</summary>
+
+| | |
+|---|---|
+| ![Home](.github/art/home.png) | ![New Session](.github/art/new_session.png) |
+| ![Devices](.github/art/devices.png) | ![Session Detail](.github/art/session_detail.png) |
+| ![Configs](.github/art/configs.png) | ![Config Editor](.github/art/config_editor.png) |
+| ![Capture](.github/art/capture.png) | ![Startup Commands](.github/art/startup_commands.png) |
+| ![Cloud Providers](.github/art/cloud_providers.png) | ![Theme Picker](.github/art/theme_picker.png) |
+
+</details>
+
 ## Features
 
 | | Feature | Description |
