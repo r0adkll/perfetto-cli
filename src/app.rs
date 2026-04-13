@@ -84,7 +84,7 @@ pub struct App {
     /// Cancel handle for an in-flight upload.
     upload_cancel: Option<Arc<Cancel>>,
     /// Pending upload intent while OAuth is in progress.
-    pending_upload: Option<(Session, UploadScope)>,
+    pending_upload: Option<(Session, UploadScope, Arc<dyn CloudProvider>)>,
 }
 
 impl App {
@@ -307,8 +307,8 @@ impl App {
                     match result {
                         Ok(provider_name) => {
                             tracing::info!(provider_name, "cloud auth succeeded");
-                            if let Some((session, scope)) = self.pending_upload.take() {
-                                self.start_upload(session, scope);
+                            if let Some((session, scope, provider)) = self.pending_upload.take() {
+                                self.start_upload(session, scope, provider);
                             }
                         }
                         Err(msg) => {
@@ -372,7 +372,7 @@ impl App {
                         })
                     {
                         self.screen = Screen::SessionDetail(SessionDetailScreen::new(
-                            session, &self.db,
+                            session, &self.db, self.cloud_provider.id(), self.cloud_provider.name(),
                         ));
                     }
                 }
@@ -408,7 +408,7 @@ impl App {
                         .and_then(|mut list| list.drain(..).find(|s| s.id == Some(id)))
                     {
                         self.screen = Screen::SessionDetail(SessionDetailScreen::new(
-                            session, &self.db,
+                            session, &self.db, self.cloud_provider.id(), self.cloud_provider.name(),
                         ));
                     } else {
                         self.return_to_sessions_list();
@@ -452,9 +452,11 @@ impl App {
                         }
                     }
                 }
-                DetailAction::Upload(scope) => {
+                DetailAction::Upload(scope, provider_id) => {
                     let session = d.session().clone();
-                    self.initiate_upload(session, scope);
+                    let provider = cloud::provider_by_id(&provider_id)
+                        .unwrap_or_else(|| self.cloud_provider.clone());
+                    self.initiate_upload(session, scope, provider);
                 }
                 DetailAction::None => {}
             },
@@ -634,7 +636,7 @@ impl App {
         });
         match session {
             Some(s) => {
-                self.screen = Screen::SessionDetail(SessionDetailScreen::new(s, &self.db))
+                self.screen = Screen::SessionDetail(SessionDetailScreen::new(s, &self.db, self.cloud_provider.id(), self.cloud_provider.name()))
             }
             None => self.return_to_sessions_list(),
         }
@@ -646,14 +648,13 @@ impl App {
     }
 
     /// Check auth and either start the upload or kick off OAuth first.
-    fn initiate_upload(&mut self, session: Session, scope: UploadScope) {
-        let provider = self.cloud_provider.clone();
+    fn initiate_upload(&mut self, session: Session, scope: UploadScope, provider: Arc<dyn CloudProvider>) {
         let db = self.db.clone();
         let tx = self.require_tx();
 
         // Check auth synchronously via a spawned task; if not authenticated,
         // run the OAuth flow, then the pending_upload will be retried.
-        self.pending_upload = Some((session.clone(), scope.clone()));
+        self.pending_upload = Some((session.clone(), scope.clone(), provider.clone()));
 
         tokio::spawn(async move {
             if provider.is_authenticated(&db).await {
@@ -679,8 +680,7 @@ impl App {
     }
 
     /// Actually spawn the upload task (called after auth succeeds).
-    fn start_upload(&mut self, session: Session, scope: UploadScope) {
-        let provider = self.cloud_provider.clone();
+    fn start_upload(&mut self, session: Session, scope: UploadScope, provider: Arc<dyn CloudProvider>) {
         let db = self.db.clone();
         let tx = self.require_tx();
         let cancel = Cancel::new();

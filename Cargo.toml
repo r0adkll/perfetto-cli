@@ -35,6 +35,9 @@ rand = "0.9"
 base64 = "0.22"
 sha2 = "0.10"
 webbrowser = "1.2.0"
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio", "sso"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
+aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 
 # Release profile tuned for distributed binaries. `lto = "thin"` is the
 # sweet spot between binary size and link time, `codegen-units = 1` lets

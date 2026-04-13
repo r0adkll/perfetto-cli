@@ -8,7 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::cloud::UploadProgress;
+use crate::cloud::{self, UploadProgress};
 use crate::db::Database;
 use crate::db::traces::TraceRecord;
 use crate::perfetto::capture::Cancel;
@@ -41,6 +41,10 @@ pub struct SessionDetailScreen {
     preview_scroll: u16,
     /// Cancel handle for an in-flight upload (set by App).
     upload_cancel: Option<Arc<Cancel>>,
+    /// ID of the default cloud provider.
+    cloud_provider_id: String,
+    /// Name of the active cloud provider (e.g. "Google Drive", "Amazon S3").
+    cloud_provider_name: String,
 }
 
 enum Mode {
@@ -48,8 +52,21 @@ enum Mode {
     Rename { buffer: String },
     EditTags { buffer: String },
     ConfirmDelete,
-    UploadConfirm { scope: UploadScope },
+    UploadPickProvider {
+        scope: UploadScope,
+        providers: Vec<(String, String)>, // (id, name)
+        selected: usize,
+    },
+    UploadConfirm {
+        scope: UploadScope,
+        provider_id: String,
+        provider_name: String,
+    },
     Uploading { progress: Option<UploadProgress> },
+    SharePickProvider {
+        entries: Vec<(String, String)>, // (provider_name, url)
+        selected: usize,
+    },
 }
 
 /// What to upload — a single trace or all traces in the session.
@@ -66,11 +83,11 @@ pub enum DetailAction {
     Capture,
     OpenTrace(PathBuf),
     OpenFolder(PathBuf),
-    Upload(UploadScope),
+    Upload(UploadScope, String), // (scope, provider_id)
 }
 
 impl SessionDetailScreen {
-    pub fn new(session: Session, db: &Database) -> Self {
+    pub fn new(session: Session, db: &Database, cloud_provider_id: &str, cloud_provider_name: &str) -> Self {
         let mut screen = Self {
             session,
             traces: Vec::new(),
@@ -82,6 +99,8 @@ impl SessionDetailScreen {
             tag_filter: None,
             preview_scroll: 0,
             upload_cancel: None,
+            cloud_provider_id: cloud_provider_id.to_string(),
+            cloud_provider_name: cloud_provider_name.to_string(),
         };
         screen.reload(db);
         screen
@@ -165,11 +184,17 @@ impl SessionDetailScreen {
             Mode::ConfirmDelete => {
                 return self.handle_confirm_delete(db, key);
             }
+            Mode::UploadPickProvider { .. } => {
+                return self.handle_upload_pick_provider(key);
+            }
             Mode::UploadConfirm { .. } => {
                 return self.handle_upload_confirm(key);
             }
             Mode::Uploading { .. } => {
                 return self.handle_uploading_key(key);
+            }
+            Mode::SharePickProvider { .. } => {
+                return self.handle_share_pick_provider(key);
             }
             Mode::Browse => {}
         }
@@ -223,13 +248,22 @@ impl SessionDetailScreen {
             }
             KeyCode::Char('s') => {
                 if let Some(t) = self.selected_trace() {
-                    if !t.uploads.is_empty() {
-                        // Copy all URLs, one per line.
-                        let text: String = t.uploads.values().cloned().collect::<Vec<_>>().join("\n");
+                    if t.uploads.len() == 1 {
+                        let text = t.uploads.values().next().unwrap().clone();
                         match cli_clipboard::set_contents(text) {
                             Ok(_) => self.set_status("link copied to clipboard".into()),
                             Err(e) => self.set_error(format!("clipboard: {e}")),
                         }
+                    } else if t.uploads.len() > 1 {
+                        let entries: Vec<(String, String)> = t
+                            .uploads
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        self.mode = Mode::SharePickProvider {
+                            entries,
+                            selected: 0,
+                        };
                     }
                 }
                 DetailAction::None
@@ -237,13 +271,13 @@ impl SessionDetailScreen {
             KeyCode::Char('u') => {
                 if let Some(t) = self.selected_trace() {
                     let scope = UploadScope::SingleTrace(t.id);
-                    self.mode = Mode::UploadConfirm { scope };
+                    self.enter_upload_or_pick(scope);
                 }
                 DetailAction::None
             }
             KeyCode::Char('U') => {
                 if !self.traces.is_empty() {
-                    self.mode = Mode::UploadConfirm { scope: UploadScope::AllTraces };
+                    self.enter_upload_or_pick(UploadScope::AllTraces);
                 }
                 DetailAction::None
             }
@@ -350,14 +384,139 @@ impl SessionDetailScreen {
         DetailAction::None
     }
 
-    fn handle_upload_confirm(&mut self, key: KeyEvent) -> DetailAction {
-        let Mode::UploadConfirm { scope } = std::mem::replace(&mut self.mode, Mode::Browse) else {
+    /// Enter provider picker if multiple providers exist, otherwise go straight
+    /// to upload confirm with the single/default provider.
+    fn enter_upload_or_pick(&mut self, scope: UploadScope) {
+        let all = cloud::all_providers();
+        if all.len() <= 1 {
+            let p = all.first().expect("at least one provider");
+            self.mode = Mode::UploadConfirm {
+                scope,
+                provider_id: p.id().to_string(),
+                provider_name: p.name().to_string(),
+            };
+        } else {
+            // Build list with default first.
+            let mut providers: Vec<(String, String)> = Vec::with_capacity(all.len());
+            // Default first.
+            if let Some(def) = all.iter().find(|p| p.id() == self.cloud_provider_id) {
+                providers.push((def.id().to_string(), def.name().to_string()));
+            }
+            for p in &all {
+                if p.id() != self.cloud_provider_id {
+                    providers.push((p.id().to_string(), p.name().to_string()));
+                }
+            }
+            self.mode = Mode::UploadPickProvider {
+                scope,
+                providers,
+                selected: 0,
+            };
+        }
+    }
+
+    fn handle_upload_pick_provider(&mut self, key: KeyEvent) -> DetailAction {
+        let Mode::UploadPickProvider {
+            scope,
+            providers,
+            mut selected,
+        } = std::mem::replace(&mut self.mode, Mode::Browse)
+        else {
             return DetailAction::None;
         };
         match key.code {
-            KeyCode::Char('y') | KeyCode::Enter => DetailAction::Upload(scope),
+            KeyCode::Left | KeyCode::Char('h') => {
+                selected = if selected == 0 {
+                    providers.len() - 1
+                } else {
+                    selected - 1
+                };
+                self.mode = Mode::UploadPickProvider {
+                    scope,
+                    providers,
+                    selected,
+                };
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                selected = (selected + 1) % providers.len();
+                self.mode = Mode::UploadPickProvider {
+                    scope,
+                    providers,
+                    selected,
+                };
+            }
+            KeyCode::Enter => {
+                let (id, name) = providers[selected].clone();
+                self.mode = Mode::UploadConfirm {
+                    scope,
+                    provider_id: id,
+                    provider_name: name,
+                };
+            }
+            KeyCode::Esc => {} // already replaced with Browse
+            _ => {
+                self.mode = Mode::UploadPickProvider {
+                    scope,
+                    providers,
+                    selected,
+                };
+            }
+        }
+        DetailAction::None
+    }
+
+    fn handle_upload_confirm(&mut self, key: KeyEvent) -> DetailAction {
+        let Mode::UploadConfirm {
+            scope,
+            provider_id,
+            provider_name,
+        } = std::mem::replace(&mut self.mode, Mode::Browse)
+        else {
+            return DetailAction::None;
+        };
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                self.cloud_provider_name = provider_name;
+                DetailAction::Upload(scope, provider_id)
+            }
             _ => DetailAction::None, // any other key cancels
         }
+    }
+
+    fn handle_share_pick_provider(&mut self, key: KeyEvent) -> DetailAction {
+        let Mode::SharePickProvider {
+            entries,
+            mut selected,
+        } = std::mem::replace(&mut self.mode, Mode::Browse)
+        else {
+            return DetailAction::None;
+        };
+        match key.code {
+            KeyCode::Left | KeyCode::Char('h') => {
+                selected = if selected == 0 {
+                    entries.len() - 1
+                } else {
+                    selected - 1
+                };
+                self.mode = Mode::SharePickProvider { entries, selected };
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                selected = (selected + 1) % entries.len();
+                self.mode = Mode::SharePickProvider { entries, selected };
+            }
+            KeyCode::Enter => {
+                let (_, url) = &entries[selected];
+                match cli_clipboard::set_contents(url.clone()) {
+                    Ok(_) => self.set_status("link copied to clipboard".into()),
+                    Err(e) => self.set_error(format!("clipboard: {e}")),
+                }
+            }
+            KeyCode::Esc => {} // already replaced with Browse
+            _ => {
+                self.mode = Mode::SharePickProvider { entries, selected };
+            }
+        }
+        DetailAction::None
     }
 
     fn handle_uploading_key(&mut self, key: KeyEvent) -> DetailAction {
@@ -415,10 +574,11 @@ impl SessionDetailScreen {
                     upload.folder_url.clone()
                 };
 
+                let provider = &self.cloud_provider_name;
                 let mut msg = if count == 1 {
-                    "uploaded 1 trace to Google Drive".to_string()
+                    format!("uploaded 1 trace to {provider}")
                 } else {
-                    format!("uploaded {count} traces to Google Drive")
+                    format!("uploaded {count} traces to {provider}")
                 };
 
                 if let Some(link) = link_to_copy {
@@ -750,7 +910,44 @@ impl SessionDetailScreen {
                     Span::raw(" cancel"),
                 ])
             }
-            Mode::UploadConfirm { scope } => {
+            Mode::UploadPickProvider {
+                providers,
+                selected,
+                ..
+            } => {
+                let mut spans = vec![Span::styled(" Upload to: ", theme::title())];
+                for (i, (id, name)) in providers.iter().enumerate() {
+                    if i > 0 {
+                        spans.push(Span::styled("  ▸  ", theme::hint()));
+                    }
+                    let is_default = *id == self.cloud_provider_id;
+                    let label = if is_default {
+                        format!("★ {name}")
+                    } else {
+                        name.clone()
+                    };
+                    if i == *selected {
+                        spans.push(Span::styled(
+                            format!(" {label} "),
+                            Style::default().bg(theme::accent()).fg(Color::Black),
+                        ));
+                    } else {
+                        spans.push(Span::styled(label, theme::hint()));
+                    }
+                }
+                spans.extend([
+                    Span::styled("   [Enter]", theme::title()),
+                    Span::raw(" select  "),
+                    Span::styled("[Esc]", theme::title()),
+                    Span::raw(" cancel"),
+                ]);
+                Line::from(spans)
+            }
+            Mode::UploadConfirm {
+                scope,
+                provider_name,
+                ..
+            } => {
                 let label = match scope {
                     UploadScope::SingleTrace(_) => {
                         self.selected_trace()
@@ -761,7 +958,7 @@ impl SessionDetailScreen {
                 };
                 Line::from(vec![
                     Span::styled(
-                        format!(" Upload \"{label}\" to Google Drive? "),
+                        format!(" Upload \"{label}\" to {provider_name}? "),
                         Style::default().fg(theme::accent()),
                     ),
                     Span::styled("[y]", theme::title()),
@@ -791,11 +988,34 @@ impl SessionDetailScreen {
                     ])
                 } else {
                     Line::from(vec![
-                        Span::styled(" Authenticating with Google Drive… ", theme::hint()),
+                        Span::styled(format!(" Authenticating with {}… ", self.cloud_provider_name), theme::hint()),
                         Span::styled("[Esc]", theme::title()),
                         Span::raw(" cancel"),
                     ])
                 }
+            }
+            Mode::SharePickProvider { entries, selected } => {
+                let mut spans = vec![Span::styled(" Copy link: ", theme::title())];
+                for (i, (name, _)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        spans.push(Span::styled("  ▸  ", theme::hint()));
+                    }
+                    if i == *selected {
+                        spans.push(Span::styled(
+                            format!(" {name} "),
+                            Style::default().bg(theme::accent()).fg(Color::Black),
+                        ));
+                    } else {
+                        spans.push(Span::styled(name.clone(), theme::hint()));
+                    }
+                }
+                spans.extend([
+                    Span::styled("   [Enter]", theme::title()),
+                    Span::raw(" copy  "),
+                    Span::styled("[Esc]", theme::title()),
+                    Span::raw(" cancel"),
+                ]);
+                Line::from(spans)
             }
             Mode::Browse => {
                 if let Some(msg) = self.status.get() {

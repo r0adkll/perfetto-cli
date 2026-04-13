@@ -1,3 +1,4 @@
+pub mod amazon_s3;
 pub mod google_drive;
 pub mod oauth;
 pub mod upload;
@@ -93,7 +94,10 @@ pub trait CloudProvider: Send + Sync {
 
 /// All registered cloud providers.
 pub fn all_providers() -> Vec<Arc<dyn CloudProvider>> {
-    vec![Arc::new(google_drive::GoogleDriveProvider)]
+    vec![
+        Arc::new(google_drive::GoogleDriveProvider),
+        Arc::new(amazon_s3::AmazonS3Provider),
+    ]
 }
 
 /// The ID of the user's preferred default provider. Falls back to the first

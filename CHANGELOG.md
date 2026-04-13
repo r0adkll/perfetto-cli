@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `build.rs` reads Google OAuth credentials from `.env` (local dev) or environment variables (CI) at compile time
 - Google OAuth env vars (`PERFETTO_GOOGLE_CLIENT_ID`, `PERFETTO_GOOGLE_CLIENT_SECRET`) injected into release workflow
 - Open session directory in OS file browser via `[d]` on the session detail screen
+- **Amazon S3 cloud provider** — upload traces to S3 with access key or AWS CLI profile auth, multipart upload with progress, and 7-day presigned shareable URLs
+- S3 configuration in TUI: `[b]` bucket, `[r]` region, `[a]` access key, `[s]` secret key, `[p]` AWS profile — shown when S3 provider is selected
+- Provider picker for upload — when multiple providers are configured, `[u]`/`[U]` shows an inline horizontal picker (◀/▶) before the confirm step; skipped when only one provider exists
+- Provider picker for share — when a trace has been uploaded to multiple providers, `[s]` lets you choose which link to copy
+- Upload and share flows now use the chosen provider instead of always using the default
+
+### Changed
+- Provider list in cloud providers screen uses aligned columns for name, status, default marker, and folder
+- Upload confirm prompt, progress, and success messages dynamically show the chosen provider name instead of hardcoded "Google Drive"
 
 ## [0.3.1] - 2026-04-12
 
