@@ -18,6 +18,8 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 | 🏷️ | **Trace management** | Rename, tag, delete, filter by tag |
 | 🌐 | **ui.perfetto.dev handoff** | One-key open via a short-lived local HTTP server with optional startup commands |
 | 🧩 | **Startup commands** | Build reusable command sets from a 14-command catalog and pass them to the Perfetto UI on open |
+| ☁️ | **Cloud upload** | Upload traces to Google Drive or Amazon S3 with progress, cancellation, and shareable links |
+| 🔀 | **Multi-provider picker** | Choose which cloud provider to upload to or share from when multiple are configured |
 | 🎨 | **Theming** | 39 built-in themes via a searchable picker, plus custom themes in `~/.config/perfetto-cli/themes/` |
 
 ## Requirements
@@ -125,7 +127,7 @@ src/
 ## Testing
 
 ```bash
-cargo test   # 34 tests
+cargo test   # 54 tests
 ```
 
 ## Releasing
