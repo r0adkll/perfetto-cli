@@ -6,7 +6,7 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 
 ## Features
 
-| |  |  |
+| | Feature | Description |
 |---|---|---|
 | 📱 | **Device picker** | Live `adb devices` with nicknames and memory |
 | 📦 | **Session management** | Group captures by app + device, stored in portable folders |
