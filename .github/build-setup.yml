@@ -1,0 +1,5 @@
+- name: Write build-time secrets to .env
+  shell: bash
+  run: |
+    echo "PERFETTO_GOOGLE_CLIENT_ID=${{ secrets.PERFETTO_GOOGLE_CLIENT_ID }}" > .env
+    echo "PERFETTO_GOOGLE_CLIENT_SECRET=${{ secrets.PERFETTO_GOOGLE_CLIENT_SECRET }}" >> .env

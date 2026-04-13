@@ -112,8 +112,6 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
-      PERFETTO_GOOGLE_CLIENT_ID: ${{ secrets.PERFETTO_GOOGLE_CLIENT_ID }}
-      PERFETTO_GOOGLE_CLIENT_SECRET: ${{ secrets.PERFETTO_GOOGLE_CLIENT_SECRET }}
     steps:
       - name: enable windows longpaths
         run: |
@@ -129,6 +127,11 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Write build-time secrets to .env"
+        run: |
+          echo "PERFETTO_GOOGLE_CLIENT_ID=${{ secrets.PERFETTO_GOOGLE_CLIENT_ID }}" > .env
+          echo "PERFETTO_GOOGLE_CLIENT_SECRET=${{ secrets.PERFETTO_GOOGLE_CLIENT_SECRET }}" >> .env
+        shell: "bash"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
