@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Startup commands: strip blank or default-value `nameOrPath` args before sending to ui.perfetto.dev so the UI falls back to its own defaults instead of receiving empty strings
+- Trace rename now moves the physical `.pftrace` file on disk and updates the DB path, instead of only changing the display label
 
 ### Added
 - Logging in the browser handoff path — serialized startup commands JSON and final URL are now written to the trace log for debugging

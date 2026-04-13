@@ -122,12 +122,24 @@ impl Database {
         Ok(traces)
     }
 
-    pub fn rename_trace(&self, id: i64, label: Option<&str>) -> Result<()> {
+    pub fn rename_trace(
+        &self,
+        id: i64,
+        label: Option<&str>,
+        new_file_path: Option<&Path>,
+    ) -> Result<()> {
         let conn = self.lock();
-        conn.execute(
-            "UPDATE traces SET label = ?1 WHERE id = ?2",
-            params![label, id],
-        )?;
+        if let Some(fp) = new_file_path {
+            conn.execute(
+                "UPDATE traces SET label = ?1, file_path = ?2 WHERE id = ?3",
+                params![label, fp.to_string_lossy(), id],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE traces SET label = ?1 WHERE id = ?2",
+                params![label, id],
+            )?;
+        }
         Ok(())
     }
 

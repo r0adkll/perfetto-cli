@@ -319,12 +319,28 @@ impl SessionDetailScreen {
             TextAction::Submit => {
                 if let Some(t) = self.selected_trace().cloned() {
                     let stem = strip_trace_ext(buffer.trim()).trim();
-                    let label_opt = if stem.is_empty() {
-                        None
+                    let (label_opt, new_file_path) = if stem.is_empty() {
+                        // Empty name — treat as no-op, keep existing.
+                        self.mode = Mode::Browse;
+                        return DetailAction::None;
                     } else {
-                        Some(format!("{stem}{TRACE_EXT}"))
+                        let new_name = format!("{stem}{TRACE_EXT}");
+                        let new_path = t.file_path.with_file_name(&new_name);
+                        // Rename the physical file on disk.
+                        if t.file_path != new_path {
+                            if let Err(e) = std::fs::rename(&t.file_path, &new_path) {
+                                self.error = Some(format!("file rename failed: {e}"));
+                                self.mode = Mode::Browse;
+                                return DetailAction::None;
+                            }
+                        }
+                        (Some(new_name), Some(new_path))
                     };
-                    if let Err(e) = db.rename_trace(t.id, label_opt.as_deref()) {
+                    if let Err(e) = db.rename_trace(
+                        t.id,
+                        label_opt.as_deref(),
+                        new_file_path.as_deref(),
+                    ) {
                         self.error = Some(format!("rename failed: {e}"));
                     }
                     self.reload(db);
