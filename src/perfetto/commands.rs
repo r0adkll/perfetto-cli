@@ -275,8 +275,49 @@ pub const COMMAND_CATALOG: &[CommandSpec] = &[
 ];
 
 /// Serialize a list of startup commands to the JSON format ui.perfetto.dev expects.
+///
+/// Trailing optional args that are blank or carry the default value (e.g.
+/// `nameOrPath` = `"name"`) are stripped so the UI falls back to its own
+/// defaults rather than receiving an empty/redundant string.
 pub fn serialize_commands(commands: &[StartupCommand]) -> String {
-    serde_json::to_string(commands).unwrap_or_else(|_| "[]".into())
+    let trimmed: Vec<StartupCommand> = commands
+        .iter()
+        .map(|cmd| {
+            let mut args = cmd.args.clone();
+            if let Some(spec) = find_spec(&cmd.id) {
+                // Walk from the tail and pop any optional arg whose value is
+                // empty or matches its default.
+                while args.len() > 0 {
+                    let idx = args.len() - 1;
+                    let is_optional = spec.args.get(idx).map_or(true, |a| !a.required);
+                    if !is_optional {
+                        break;
+                    }
+                    let val = args[idx].trim();
+                    if val.is_empty() || is_default_value(spec, idx, val) {
+                        args.pop();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            StartupCommand {
+                id: cmd.id.clone(),
+                args,
+            }
+        })
+        .collect();
+    serde_json::to_string(&trimmed).unwrap_or_else(|_| "[]".into())
+}
+
+/// Returns `true` when `value` is the implicit default for the arg at `idx`
+/// in the given command spec, meaning the UI will behave the same whether or
+/// not we send it.
+fn is_default_value(spec: &CommandSpec, idx: usize, value: &str) -> bool {
+    match spec.args.get(idx) {
+        Some(arg) if arg.name == "nameOrPath" => value.eq_ignore_ascii_case("name"),
+        _ => false,
+    }
 }
 
 /// Find the spec for a command ID from the catalog.
@@ -290,7 +331,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serialize_roundtrips() {
+    fn serialize_roundtrips_required_args() {
         let cmds = vec![
             StartupCommand {
                 id: "dev.perfetto.PinTracksByRegex".into(),
@@ -304,6 +345,41 @@ mod tests {
         let json = serialize_commands(&cmds);
         let parsed: Vec<StartupCommand> = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, cmds);
+    }
+
+    #[test]
+    fn serialize_keeps_path_when_set() {
+        let cmds = vec![StartupCommand {
+            id: "dev.perfetto.PinTracksByRegex".into(),
+            args: vec![".*".into(), "path".into()],
+        }];
+        let json = serialize_commands(&cmds);
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        let args = parsed[0]["args"].as_array().unwrap();
+        assert_eq!(args, &[".*", "path"]);
+    }
+
+    #[test]
+    fn serialize_strips_blank_name_or_path() {
+        let cmds = vec![StartupCommand {
+            id: "dev.perfetto.PinTracksByRegex".into(),
+            args: vec![".*".into(), "".into()],
+        }];
+        let json = serialize_commands(&cmds);
+        let parsed: Vec<StartupCommand> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0].args, vec![".*"]);
+    }
+
+    #[test]
+    fn serialize_strips_default_name_value() {
+        // "name" is the default for nameOrPath — should be omitted.
+        let cmds = vec![StartupCommand {
+            id: "dev.perfetto.ExpandTracksByRegex".into(),
+            args: vec!["foo".into(), "name".into()],
+        }];
+        let json = serialize_commands(&cmds);
+        let parsed: Vec<StartupCommand> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0].args, vec!["foo"]);
     }
 
     #[test]

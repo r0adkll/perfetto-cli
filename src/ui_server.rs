@@ -86,9 +86,15 @@ impl UiServer {
             .unwrap_or_else(|| "trace.pftrace".into());
 
         let commands_param = if startup_commands.is_empty() {
+            tracing::debug!("no startup commands to attach");
             String::new()
         } else {
             let json = commands::serialize_commands(startup_commands);
+            tracing::info!(
+                count = startup_commands.len(),
+                json = %json,
+                "attaching startup commands to handoff URL"
+            );
             format!(
                 "&startupCommands={}",
                 urlencoding::encode(&json)
@@ -99,6 +105,11 @@ impl UiServer {
             "{UI_ORIGIN}/#!/?url=http://127.0.0.1:9001/{filename}&referrer=perfetto-cli{commands_param}"
         );
 
+        tracing::info!(
+            trace = %canonical.display(),
+            %url,
+            "opening trace in browser"
+        );
         webbrowser::open(&url).context("failed to launch browser")?;
         Ok(url)
     }
