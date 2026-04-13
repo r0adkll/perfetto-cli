@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-13
+
 ### Changed
 - Removed global device selection — the header device indicator and dedicated device picker screen are gone; device selection now lives exclusively in the per-session new-session wizard
 - New session device list now shows colored status badges with labels (`● online`, `○ offline`, `⚠ unauth`, `· remembered`) with aligned columns
@@ -142,5 +144,5 @@ Initial release.
 - 🏠 Welcome banner with ASCII logo on empty sessions list
 - 🔧 Release pipeline via cargo-dist with shell installer + Homebrew tap
 
-[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.1...v0.4.0[0.3.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.0...v0.3.1[0.3.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.2.0...v0.3.0[0.2.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...v0.2.0[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
+[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.4.0...v0.4.1[0.4.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.1...v0.4.0[0.3.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.0...v0.3.1[0.3.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.2.0...v0.3.0[0.2.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...v0.2.0[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
