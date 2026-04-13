@@ -112,6 +112,8 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+      PERFETTO_GOOGLE_CLIENT_ID: ${{ secrets.PERFETTO_GOOGLE_CLIENT_ID }}
+      PERFETTO_GOOGLE_CLIENT_SECRET: ${{ secrets.PERFETTO_GOOGLE_CLIENT_SECRET }}
     steps:
       - name: enable windows longpaths
         run: |

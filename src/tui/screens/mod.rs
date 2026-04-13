@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod cloud_providers;
 pub mod command_set_editor;
 pub mod command_set_list;
 pub mod config_editor;

@@ -29,6 +29,11 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 opaline = { version = "0.4", features = ["global-state", "discovery", "widgets", "builtin-themes", "ratatui"] }
 urlencoding = "2.1.3"
 open = "5"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+async-trait = "0.1"
+rand = "0.9"
+base64 = "0.22"
+sha2 = "0.10"
 webbrowser = "1.2.0"
 
 # Release profile tuned for distributed binaries. `lto = "thin"` is the

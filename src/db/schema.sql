@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS traces (
     duration_ms  INTEGER,
     size_bytes   INTEGER,
     captured_at  TEXT NOT NULL,
+    remote_url   TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 

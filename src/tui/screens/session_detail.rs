@@ -1,14 +1,17 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
+use crate::cloud::UploadProgress;
 use crate::db::Database;
 use crate::db::traces::TraceRecord;
+use crate::perfetto::capture::Cancel;
 use crate::perfetto::textproto;
 use crate::session::Session;
 use crate::tui::chrome;
@@ -36,6 +39,8 @@ pub struct SessionDetailScreen {
     mode: Mode,
     tag_filter: Option<String>,
     preview_scroll: u16,
+    /// Cancel handle for an in-flight upload (set by App).
+    upload_cancel: Option<Arc<Cancel>>,
 }
 
 enum Mode {
@@ -43,6 +48,15 @@ enum Mode {
     Rename { buffer: String },
     EditTags { buffer: String },
     ConfirmDelete,
+    UploadConfirm { scope: UploadScope },
+    Uploading { progress: Option<UploadProgress> },
+}
+
+/// What to upload — a single trace or all traces in the session.
+#[derive(Debug, Clone)]
+pub enum UploadScope {
+    SingleTrace(i64),
+    AllTraces,
 }
 
 pub enum DetailAction {
@@ -52,6 +66,7 @@ pub enum DetailAction {
     Capture,
     OpenTrace(PathBuf),
     OpenFolder(PathBuf),
+    Upload(UploadScope),
 }
 
 impl SessionDetailScreen {
@@ -66,6 +81,7 @@ impl SessionDetailScreen {
             mode: Mode::Browse,
             tag_filter: None,
             preview_scroll: 0,
+            upload_cancel: None,
         };
         screen.reload(db);
         screen
@@ -149,6 +165,12 @@ impl SessionDetailScreen {
             Mode::ConfirmDelete => {
                 return self.handle_confirm_delete(db, key);
             }
+            Mode::UploadConfirm { .. } => {
+                return self.handle_upload_confirm(key);
+            }
+            Mode::Uploading { .. } => {
+                return self.handle_uploading_key(key);
+            }
             Mode::Browse => {}
         }
 
@@ -198,6 +220,32 @@ impl SessionDetailScreen {
                 } else {
                     DetailAction::None
                 }
+            }
+            KeyCode::Char('s') => {
+                if let Some(t) = self.selected_trace() {
+                    if !t.uploads.is_empty() {
+                        // Copy all URLs, one per line.
+                        let text: String = t.uploads.values().cloned().collect::<Vec<_>>().join("\n");
+                        match cli_clipboard::set_contents(text) {
+                            Ok(_) => self.set_status("link copied to clipboard".into()),
+                            Err(e) => self.set_error(format!("clipboard: {e}")),
+                        }
+                    }
+                }
+                DetailAction::None
+            }
+            KeyCode::Char('u') => {
+                if let Some(t) = self.selected_trace() {
+                    let scope = UploadScope::SingleTrace(t.id);
+                    self.mode = Mode::UploadConfirm { scope };
+                }
+                DetailAction::None
+            }
+            KeyCode::Char('U') => {
+                if !self.traces.is_empty() {
+                    self.mode = Mode::UploadConfirm { scope: UploadScope::AllTraces };
+                }
+                DetailAction::None
             }
             KeyCode::Char('d') => DetailAction::OpenFolder(self.session.folder_path.clone()),
             KeyCode::Char('[') => {
@@ -300,6 +348,90 @@ impl SessionDetailScreen {
             _ => self.mode = Mode::Browse,
         }
         DetailAction::None
+    }
+
+    fn handle_upload_confirm(&mut self, key: KeyEvent) -> DetailAction {
+        let Mode::UploadConfirm { scope } = std::mem::replace(&mut self.mode, Mode::Browse) else {
+            return DetailAction::None;
+        };
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => DetailAction::Upload(scope),
+            _ => DetailAction::None, // any other key cancels
+        }
+    }
+
+    fn handle_uploading_key(&mut self, key: KeyEvent) -> DetailAction {
+        // Allow Esc or Ctrl-C to cancel the upload.
+        let ctrl_c = matches!(
+            (key.code, key.modifiers),
+            (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL)
+        );
+        if key.code == KeyCode::Esc || ctrl_c {
+            if let Some(cancel) = &self.upload_cancel {
+                cancel.cancel();
+            }
+        }
+        DetailAction::None
+    }
+
+    /// Called by App to set the cancel handle for the current upload.
+    pub fn set_upload_cancel(&mut self, cancel: Arc<Cancel>) {
+        self.upload_cancel = Some(cancel);
+    }
+
+    /// Transition to the Uploading mode.
+    pub fn enter_uploading(&mut self) {
+        self.mode = Mode::Uploading { progress: None };
+    }
+
+    /// Update progress during an upload.
+    pub fn on_upload_progress(&mut self, progress: UploadProgress) {
+        if let Mode::Uploading { progress: p } = &mut self.mode {
+            *p = Some(progress);
+        }
+    }
+
+    /// Handle upload completion: reload traces, copy link to clipboard.
+    pub fn on_upload_done(
+        &mut self,
+        db: &Database,
+        result: Result<crate::cloud::UploadResult, String>,
+    ) {
+        self.upload_cancel = None;
+        self.mode = Mode::Browse;
+        match result {
+            Ok(upload) => {
+                // Reload traces so the UI picks up the new remote_url values.
+                self.reload(db);
+
+                let count = upload.traces.len();
+
+                // Copy the most useful link to clipboard:
+                // - Single trace: copy the trace URL
+                // - Multiple traces: copy the folder URL
+                let link_to_copy = if count == 1 {
+                    upload.traces.first().and_then(|(_, url)| url.clone())
+                } else {
+                    upload.folder_url.clone()
+                };
+
+                let mut msg = if count == 1 {
+                    "uploaded 1 trace to Google Drive".to_string()
+                } else {
+                    format!("uploaded {count} traces to Google Drive")
+                };
+
+                if let Some(link) = link_to_copy {
+                    match cli_clipboard::set_contents(link) {
+                        Ok(_) => msg.push_str(" — link copied"),
+                        Err(e) => tracing::warn!(?e, "clipboard copy failed"),
+                    }
+                }
+
+                self.set_status(msg);
+            }
+            Err(msg) => self.set_error(format!("upload failed: {msg}")),
+        }
     }
 
     fn move_selection(&mut self, delta: i32) {
@@ -556,6 +688,15 @@ impl SessionDetailScreen {
                         Span::raw("  "),
                         Span::styled(format!("{size}  {duration}"), theme::hint()),
                     ];
+                    if !t.uploads.is_empty() {
+                        let names: Vec<&str> = t.uploads.keys().map(|s| s.as_str()).collect();
+                        spans.push(Span::styled(
+                            format!("  [{}]", names.join(", ")),
+                            Style::default()
+                                .fg(theme::accent_secondary())
+                                .add_modifier(Modifier::DIM),
+                        ));
+                    }
                     if !t.tags.is_empty() {
                         spans.push(Span::raw("  "));
                         spans.push(Span::styled(
@@ -609,6 +750,53 @@ impl SessionDetailScreen {
                     Span::raw(" cancel"),
                 ])
             }
+            Mode::UploadConfirm { scope } => {
+                let label = match scope {
+                    UploadScope::SingleTrace(_) => {
+                        self.selected_trace()
+                            .map(|t| t.label.clone().unwrap_or_else(|| file_name(&t.file_path)))
+                            .unwrap_or_else(|| "trace".into())
+                    }
+                    UploadScope::AllTraces => format!("all {} traces", self.traces.len()),
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!(" Upload \"{label}\" to Google Drive? "),
+                        Style::default().fg(theme::accent()),
+                    ),
+                    Span::styled("[y]", theme::title()),
+                    Span::raw(" yes  "),
+                    Span::styled("[n]", theme::title()),
+                    Span::raw(" cancel"),
+                ])
+            }
+            Mode::Uploading { progress } => {
+                if let Some(p) = progress {
+                    let pct = if p.total_bytes > 0 {
+                        (p.bytes_sent as f64 / p.total_bytes as f64 * 100.0) as u8
+                    } else {
+                        0
+                    };
+                    let file_label = if p.total_files > 1 {
+                        format!("{} ({}/{})", p.file_name, p.file_index + 1, p.total_files)
+                    } else {
+                        p.file_name.clone()
+                    };
+                    Line::from(vec![
+                        Span::styled(" Uploading ", theme::title()),
+                        Span::raw(file_label),
+                        Span::raw(format!("  {pct}%  ")),
+                        Span::styled("[Esc]", theme::title()),
+                        Span::raw(" cancel"),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled(" Authenticating with Google Drive… ", theme::hint()),
+                        Span::styled("[Esc]", theme::title()),
+                        Span::raw(" cancel"),
+                    ])
+                }
+            }
             Mode::Browse => {
                 if let Some(msg) = self.status.get() {
                     Line::from(Span::styled(
@@ -616,11 +804,22 @@ impl SessionDetailScreen {
                         Style::default().fg(theme::ok()),
                     ))
                 } else {
-                    Line::from(vec![
+                    let has_link = self
+                        .selected_trace()
+                        .is_some_and(|t| !t.uploads.is_empty());
+                    let mut spans = vec![
                         Span::styled(" [c]", theme::title()),
                         Span::raw(" capture  "),
                         Span::styled("[o]", theme::title()),
                         Span::raw(" open  "),
+                        Span::styled("[u]", theme::title()),
+                        Span::raw(" upload  "),
+                    ];
+                    if has_link {
+                        spans.push(Span::styled("[s]", theme::title()));
+                        spans.push(Span::raw(" share  "));
+                    }
+                    spans.extend([
                         Span::styled("[r]", theme::title()),
                         Span::raw(" rename  "),
                         Span::styled("[t]", theme::title()),
@@ -635,7 +834,8 @@ impl SessionDetailScreen {
                         Span::raw(" config  "),
                         Span::styled("[Esc]", theme::title()),
                         Span::raw(" back"),
-                    ])
+                    ]);
+                    Line::from(spans)
                 }
             }
         };

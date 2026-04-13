@@ -27,6 +27,15 @@ impl Database {
     pub fn migrate(&self) -> Result<()> {
         let conn = self.lock();
         conn.execute_batch(include_str!("schema.sql"))?;
+
+        // Add remote_url column to traces if upgrading from an older schema.
+        let has_remote_url = conn
+            .prepare("SELECT remote_url FROM traces LIMIT 0")
+            .is_ok();
+        if !has_remote_url {
+            conn.execute_batch("ALTER TABLE traces ADD COLUMN remote_url TEXT")?;
+        }
+
         Ok(())
     }
 
@@ -51,6 +60,13 @@ impl Database {
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![key, value],
         )?;
+        Ok(())
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        use rusqlite::params;
+        let conn = self.lock();
+        conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
         Ok(())
     }
 

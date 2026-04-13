@@ -25,6 +25,7 @@ pub enum SessionsAction {
     OpenConfigList,
     OpenCommandSets,
     OpenThemePicker,
+    OpenCloudProviders,
     NewSession,
     OpenSession(i64),
 }
@@ -85,6 +86,7 @@ impl SessionsListScreen {
             KeyCode::Char('g') => SessionsAction::OpenConfigList,
             KeyCode::Char('s') => SessionsAction::OpenCommandSets,
             KeyCode::Char('t') => SessionsAction::OpenThemePicker,
+            KeyCode::Char('p') => SessionsAction::OpenCloudProviders,
             KeyCode::Char('n') => SessionsAction::NewSession,
             KeyCode::Down | KeyCode::Char('j') => {
                 self.move_selection(1);
@@ -236,7 +238,9 @@ impl SessionsListScreen {
                 Span::styled("[s]", theme::title()),
                 Span::raw(" commands  "),
                 Span::styled("[t]", theme::title()),
-                Span::raw(" theme"),
+                Span::raw(" theme  "),
+                Span::styled("[p]", theme::title()),
+                Span::raw(" providers"),
             ])
         };
         frame.render_widget(Paragraph::new(footer), chunks[2]);

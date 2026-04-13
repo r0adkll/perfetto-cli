@@ -1,5 +1,6 @@
 mod adb;
 mod app;
+mod cloud;
 mod config;
 mod db;
 mod perfetto;

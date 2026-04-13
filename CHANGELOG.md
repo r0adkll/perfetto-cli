@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Cloud upload support — upload individual traces or entire sessions to Google Drive
+- Extensible cloud provider system via `CloudProvider` trait for future storage backends (S3, Dropbox, etc.)
+- OAuth2 authentication with PKCE for Google Drive — browser-based consent flow with local redirect listener
+- Resumable uploads with 5 MB chunking, real-time progress in the TUI footer, and `Esc`/`Ctrl-C` cancellation
+- Automatic token refresh — re-authenticates silently when the access token expires
+- Per-trace upload tracking — uploaded traces show `[Google Drive]` indicator in the trace list
+- `[u]` upload selected trace / `[U]` upload all session traces from the session detail screen
+- `[s]` share — copies the uploaded trace's shareable link to the clipboard (visible only for uploaded traces)
+- Cloud providers management screen (`[p]` from sessions list) — login/logout, set default provider, configure upload folder path
+- Configurable upload folder root per provider (defaults to `perfetto-cli/<session-name>/`)
+- Upload links persisted as JSON in the `remote_url` column, supporting multiple providers per trace
+- `build.rs` reads Google OAuth credentials from `.env` (local dev) or environment variables (CI) at compile time
+- Google OAuth env vars (`PERFETTO_GOOGLE_CLIENT_ID`, `PERFETTO_GOOGLE_CLIENT_SECRET`) injected into release workflow
 - Open session directory in OS file browser via `[d]` on the session detail screen
 
 ## [0.3.1] - 2026-04-12

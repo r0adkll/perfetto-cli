@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::execute;
@@ -9,12 +10,16 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::cloud::{self, CloudProvider};
 use crate::config::Paths;
 use crate::db::Database;
+use crate::perfetto::capture::Cancel;
+use crate::session::Session;
 use crate::tui::theme;
 use crate::tui::Tui;
 use crate::tui::event::{self, AppEvent};
 use crate::tui::screens::capture::{CaptureAction, CaptureScreen};
+use crate::tui::screens::cloud_providers::{CloudProvidersScreen, ProviderAction};
 use crate::tui::screens::command_set_editor::{CmdEditorAction, CommandSetEditorScreen};
 use crate::tui::screens::command_set_list::{CommandSetListAction, CommandSetListScreen};
 use crate::tui::screens::config_editor::{ConfigEditorScreen, EditorAction};
@@ -22,7 +27,7 @@ use crate::tui::screens::config_import::{ConfigImportScreen, ImportAction};
 use crate::tui::screens::config_list::{ConfigListAction, ConfigListScreen};
 use crate::tui::screens::device_picker::{DevicePickerScreen, PickerAction};
 use crate::tui::screens::new_session::{NewSessionScreen, WizardAction};
-use crate::tui::screens::session_detail::{DetailAction, SessionDetailScreen};
+use crate::tui::screens::session_detail::{DetailAction, SessionDetailScreen, UploadScope};
 use crate::tui::screens::sessions_list::{SessionsAction, SessionsListScreen};
 use crate::tui::screens::theme_picker::{ThemePickerAction, ThemePickerScreen};
 use crate::ui_server::UiServer;
@@ -57,6 +62,7 @@ enum Screen {
     CommandSetEditor(CommandSetEditorScreen),
     Capture(CaptureScreen),
     ThemePicker(ThemePickerScreen),
+    CloudProviders(CloudProvidersScreen),
 }
 
 pub struct App {
@@ -73,6 +79,12 @@ pub struct App {
     editor_context: Option<EditorContext>,
     /// What opened the command set editor.
     cmd_editor_context: Option<CmdSetEditorContext>,
+    /// Cloud provider used for uploads.
+    cloud_provider: Arc<dyn CloudProvider>,
+    /// Cancel handle for an in-flight upload.
+    upload_cancel: Option<Arc<Cancel>>,
+    /// Pending upload intent while OAuth is in progress.
+    pending_upload: Option<(Session, UploadScope)>,
 }
 
 impl App {
@@ -96,6 +108,8 @@ impl App {
             })
         };
 
+        let cloud_provider = cloud::default_provider(&db);
+
         Self {
             db,
             paths,
@@ -107,6 +121,9 @@ impl App {
             active_device,
             editor_context: None,
             cmd_editor_context: None,
+            cloud_provider,
+            upload_cancel: None,
+            pending_upload: None,
         }
     }
 
@@ -155,6 +172,7 @@ impl App {
             Screen::CommandSetEditor(_) => "Perfetto CLI — Edit Commands".to_string(),
             Screen::Capture(_) => "Perfetto CLI — Capturing".to_string(),
             Screen::ThemePicker(_) => "Perfetto CLI — Theme".to_string(),
+            Screen::CloudProviders(_) => "Perfetto CLI — Cloud Providers".to_string(),
         };
         let _ = execute!(std::io::stdout(), SetTitle(title));
 
@@ -170,6 +188,7 @@ impl App {
             Screen::CommandSetEditor(ce) => ce.render(frame),
             Screen::Capture(c) => c.render(frame),
             Screen::ThemePicker(tp) => tp.render(frame),
+            Screen::CloudProviders(cp) => cp.render(frame),
         }
 
         // Render active device label inside the header box, right-aligned on
@@ -279,6 +298,45 @@ impl App {
                     c.on_done(result);
                 }
             }
+            AppEvent::CloudAuthResult(result) => {
+                // Route to the cloud providers screen if it's active,
+                // otherwise handle as upload auth.
+                if let Screen::CloudProviders(cp) = &mut self.screen {
+                    cp.on_auth_result(result);
+                } else {
+                    match result {
+                        Ok(provider_name) => {
+                            tracing::info!(provider_name, "cloud auth succeeded");
+                            if let Some((session, scope)) = self.pending_upload.take() {
+                                self.start_upload(session, scope);
+                            }
+                        }
+                        Err(msg) => {
+                            tracing::error!(msg, "cloud auth failed");
+                            self.pending_upload = None;
+                            if let Screen::SessionDetail(d) = &mut self.screen {
+                                d.set_error(format!("auth failed: {msg}"));
+                            }
+                        }
+                    }
+                }
+            }
+            AppEvent::CloudProviderStatus { provider_id, authenticated } => {
+                if let Screen::CloudProviders(cp) = &mut self.screen {
+                    cp.on_provider_status(&provider_id, authenticated);
+                }
+            }
+            AppEvent::CloudUploadProgress(progress) => {
+                if let Screen::SessionDetail(d) = &mut self.screen {
+                    d.on_upload_progress(progress);
+                }
+            }
+            AppEvent::CloudUploadDone(result) => {
+                self.upload_cancel = None;
+                if let Screen::SessionDetail(d) = &mut self.screen {
+                    d.on_upload_done(&self.db, result);
+                }
+            }
             _ => {}
         }
     }
@@ -321,6 +379,11 @@ impl App {
                 SessionsAction::OpenThemePicker => {
                     self.screen =
                         Screen::ThemePicker(ThemePickerScreen::new(self.paths.themes_dir()));
+                }
+                SessionsAction::OpenCloudProviders => {
+                    let tx = self.require_tx();
+                    self.screen =
+                        Screen::CloudProviders(CloudProvidersScreen::new(self.db.clone(), tx));
                 }
                 SessionsAction::None => {}
             },
@@ -388,6 +451,10 @@ impl App {
                             Err(e) => d.set_error(format!("open folder failed: {e}")),
                         }
                     }
+                }
+                DetailAction::Upload(scope) => {
+                    let session = d.session().clone();
+                    self.initiate_upload(session, scope);
                 }
                 DetailAction::None => {}
             },
@@ -498,6 +565,14 @@ impl App {
                 }
                 ThemePickerAction::None => {}
             },
+            Screen::CloudProviders(cp) => match cp.on_key(key) {
+                ProviderAction::Back => {
+                    // Refresh the cloud provider in case the default changed.
+                    self.cloud_provider = cloud::default_provider(&self.db);
+                    self.return_to_sessions_list();
+                }
+                ProviderAction::None => {}
+            },
         }
     }
 
@@ -568,6 +643,97 @@ impl App {
     fn return_to_sessions_list(&mut self) {
         self.sessions_list.reload(&self.db);
         self.screen = Screen::SessionsList;
+    }
+
+    /// Check auth and either start the upload or kick off OAuth first.
+    fn initiate_upload(&mut self, session: Session, scope: UploadScope) {
+        let provider = self.cloud_provider.clone();
+        let db = self.db.clone();
+        let tx = self.require_tx();
+
+        // Check auth synchronously via a spawned task; if not authenticated,
+        // run the OAuth flow, then the pending_upload will be retried.
+        self.pending_upload = Some((session.clone(), scope.clone()));
+
+        tokio::spawn(async move {
+            if provider.is_authenticated(&db).await {
+                // Already authed — signal ready (the pending_upload will be consumed).
+                let _ = tx.send(AppEvent::CloudAuthResult(Ok(provider.id().to_string())));
+            } else {
+                // Need to authenticate first.
+                match provider.authenticate(&db).await {
+                    Ok(()) => {
+                        let _ = tx.send(AppEvent::CloudAuthResult(Ok(provider.id().to_string())));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::CloudAuthResult(Err(format!("{e:#}"))));
+                    }
+                }
+            }
+        });
+
+        // Transition UI to uploading state.
+        if let Screen::SessionDetail(d) = &mut self.screen {
+            d.enter_uploading();
+        }
+    }
+
+    /// Actually spawn the upload task (called after auth succeeds).
+    fn start_upload(&mut self, session: Session, scope: UploadScope) {
+        let provider = self.cloud_provider.clone();
+        let db = self.db.clone();
+        let tx = self.require_tx();
+        let cancel = Cancel::new();
+        self.upload_cancel = Some(cancel.clone());
+
+        // Transition UI.
+        if let Screen::SessionDetail(d) = &mut self.screen {
+            d.set_upload_cancel(cancel.clone());
+            d.enter_uploading();
+        }
+
+        let traces = match &scope {
+            UploadScope::SingleTrace(trace_id) => {
+                let tid = *trace_id;
+                session.id.and_then(|sid| {
+                    self.db.list_traces(sid).ok().map(|list| {
+                        list.into_iter().filter(|t| t.id == tid).collect::<Vec<_>>()
+                    })
+                }).unwrap_or_default()
+            }
+            UploadScope::AllTraces => {
+                session.id.and_then(|sid| {
+                    self.db.list_traces(sid).ok()
+                }).unwrap_or_default()
+            }
+        };
+
+        tokio::spawn(async move {
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+
+            // Forward progress events to the app event bus.
+            let tx_progress = tx.clone();
+            tokio::spawn(async move {
+                while let Some(p) = progress_rx.recv().await {
+                    if tx_progress.send(AppEvent::CloudUploadProgress(p)).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            let result = cloud::upload::upload_traces(
+                provider.as_ref(),
+                &db,
+                &session,
+                &traces,
+                &progress_tx,
+                &cancel,
+            )
+            .await;
+
+            drop(progress_tx);
+            let _ = tx.send(AppEvent::CloudUploadDone(result.map_err(|e| format!("{e:#}"))));
+        });
     }
 
     fn require_tx(&self) -> UnboundedSender<AppEvent> {
