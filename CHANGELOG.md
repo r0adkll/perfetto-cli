@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sessions list shows a dim `[imported]` tag next to imported sessions
 - Three new `sessions` columns (`is_imported`, `benchmark_json_path`, `import_source_dir`) with an additive migration so existing databases upgrade in place
 
+### Fixed
+- Saving a session config in the editor now returns to the session detail screen instead of the session list
+
 ## [0.4.1] - 2026-04-13
 
 ### Changed

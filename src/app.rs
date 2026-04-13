@@ -512,21 +512,20 @@ impl App {
         }
     }
 
-    fn save_editor_config(&mut self, config: &crate::perfetto::TraceConfig) {
-        let ctx = self.editor_context.take();
-        match ctx {
+    fn save_editor_config(&self, config: &crate::perfetto::TraceConfig) {
+        match &self.editor_context {
             Some(EditorContext::Session(id)) => {
-                if let Err(e) = self.save_session_config(id, config) {
+                if let Err(e) = self.save_session_config(*id, config) {
                     tracing::error!(?e, "failed to save session config");
                 }
             }
             Some(EditorContext::SavedConfig(id)) => {
-                if let Err(e) = self.db.update_config(id, config) {
+                if let Err(e) = self.db.update_config(*id, config) {
                     tracing::error!(?e, "failed to update saved config");
                 }
             }
             Some(EditorContext::NewConfig(name)) => {
-                match self.db.create_config(&name, config) {
+                match self.db.create_config(name, config) {
                     Ok(_) => tracing::info!(name, "saved new config"),
                     Err(e) => tracing::error!(?e, "failed to create config"),
                 }
