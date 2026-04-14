@@ -1,6 +1,6 @@
 # Ship It
 
-Update `CHANGELOG.md`, commit, push, and open a pull request for the pending changes on the current branch.
+Update `CHANGELOG.md` and (when relevant) `README.md`, commit, push, and open a pull request for the pending changes on the current branch.
 
 ## Input
 
@@ -38,20 +38,39 @@ Style rules (match the existing file — read a few recent entries first):
 - Don't invent a version header. Leave things under `[Unreleased]`; releases happen via tag, not this command.
 - If `$ARGUMENTS` is provided, use it to shape tone but don't paste it verbatim.
 
-### 3. Commit
+### 3. Update `README.md` (when relevant)
 
-- Stage `CHANGELOG.md` plus any uncommitted code changes that belong with this ship. Add files by name; never `git add -A` / `git add .`.
-- If there are already commits on the branch and the only new change is the changelog, make a single `docs: update changelog` commit.
-- Otherwise, bundle code + changelog into one commit with a conventional message that matches the repo's style (see `git log` — short imperative subject, optional body explaining *why*).
+Decide whether the change touches anything the README documents. Skim `README.md` first so you know what surfaces it covers (features table, quick start, dedicated sections, CLI subcommands, requirements, data-storage layout, test count).
+
+Update it when the change:
+
+- Adds or removes a feature substantial enough to belong in the **features table** (new screen, new subcommand, new major flow). Don't add a row for every small addition — match the existing bar.
+- Adds or changes a **CLI subcommand**, keybinding mentioned in Quick start, or a documented section (e.g. Config editor, Local trace analysis).
+- Changes **requirements**, install flow, data-storage layout, or another fact the README states.
+- Bumps a stat the README quotes (e.g. test count).
+
+Skip the README when the change is a bug fix, internal refactor, dependency bump, or a small addition that doesn't rise to the README's level of signal — the changelog is enough. When in doubt, leave it alone; README updates are higher-signal than changelog and shouldn't accumulate noise.
+
+Style rules (match the existing file):
+
+- Mirror the surrounding format — feature table rows use an emoji + bold name + one-line description; sections use the same heading depth and tone as their neighbors.
+- Don't duplicate every changelog bullet. The README captures *what exists*; the changelog captures *what changed*.
+- Use backticks for code identifiers, keybindings, file paths, and subcommand names.
+
+### 4. Commit
+
+- Stage `CHANGELOG.md`, `README.md` (if touched), plus any uncommitted code changes that belong with this ship. Add files by name; never `git add -A` / `git add .`.
+- If there are already commits on the branch and the only new changes are docs, make a single `docs: update changelog` (or `docs: update changelog and README`) commit.
+- Otherwise, bundle code + docs into one commit with a conventional message that matches the repo's style (see `git log` — short imperative subject, optional body explaining *why*).
 - HEREDOC for the message, ending with the `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` trailer.
 - Never `--amend`, never `--no-verify`. If a pre-commit hook fails, fix the underlying issue and create a new commit.
 
-### 4. Push
+### 5. Push
 
 - If the branch has no upstream, `git push -u origin HEAD`.
 - Otherwise `git push`. Never force-push from this command — if the push is rejected, stop and tell the user.
 
-### 5. Open the PR
+### 6. Open the PR
 
 Use `gh pr create`. If a PR already exists for this branch (`gh pr view --json url 2>/dev/null`), skip creation and just report the existing URL.
 
@@ -59,7 +78,7 @@ Use `gh pr create`. If a PR already exists for this branch (`gh pr view --json u
 - Body (HEREDOC): a `## Summary` section (1–3 bullets covering the *user-visible* change, mirroring the changelog entries) and a `## Test plan` section (markdown checklist of what the reviewer / you should verify — at minimum `cargo build` and `cargo test`, plus any UI flows you touched).
 - End the body with the `🤖 Generated with [Claude Code](https://claude.com/claude-code)` footer.
 
-### 6. Report
+### 7. Report
 
 Print the PR URL and a one-line summary of what shipped. Nothing else.
 
