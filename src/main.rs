@@ -3,11 +3,14 @@ mod app;
 mod cloud;
 mod config;
 mod db;
+mod import;
 mod maintenance;
 mod perfetto;
 mod session;
 mod tui;
 mod ui_server;
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -28,6 +31,18 @@ enum Command {
         #[arg(short, long)]
         yes: bool,
     },
+    /// Import an Android Macrobenchmark output directory. Creates one
+    /// read-only session per `@Test` method, copying the benchmarkData JSON
+    /// and every matching iteration trace into its session folder.
+    Import {
+        /// Path to the directory containing `*-benchmarkData.json` and
+        /// `*_iter*.perfetto-trace` files (typically under
+        /// `build/outputs/connected_android_test_additional_output/...`).
+        dir: PathBuf,
+        /// Optional prefix for generated session names (e.g. a run ID).
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -37,6 +52,8 @@ async fn main() -> Result<()> {
     let paths = config::Paths::resolve()?;
     paths.ensure()?;
 
+    // `clear` runs before tracing init so we don't rotate a log file just to
+    // delete the DB next to it.
     if let Some(Command::Clear { yes }) = cli.command {
         return maintenance::clear_cache(&paths, yes);
     }
@@ -47,6 +64,35 @@ async fn main() -> Result<()> {
     let db = db::Database::open(&paths.db_file())?;
     db.migrate()?;
 
+    match cli.command {
+        Some(Command::Import { dir, name }) => run_import(&db, &paths, &dir, name.as_deref()),
+        Some(Command::Clear { .. }) => unreachable!("handled above"),
+        None => run_tui(db, paths).await,
+    }
+}
+
+fn run_import(
+    db: &db::Database,
+    paths: &config::Paths,
+    dir: &std::path::Path,
+    name: Option<&str>,
+) -> Result<()> {
+    let outcomes = import::import_directory(db, paths, dir, name)?;
+    println!("Imported {} session(s) from {}", outcomes.len(), dir.display());
+    for o in &outcomes {
+        println!(
+            "  #{:<5} {}  ({} trace{})  → {}",
+            o.session_id,
+            o.session_name,
+            o.trace_count,
+            if o.trace_count == 1 { "" } else { "s" },
+            o.folder_path.display(),
+        );
+    }
+    Ok(())
+}
+
+async fn run_tui(db: db::Database, paths: config::Paths) -> Result<()> {
     // Write the embedded Perfetto theme to disk and activate the persisted
     // (or default) theme before the TUI renders its first frame.
     config::ensure_default_theme(&paths);

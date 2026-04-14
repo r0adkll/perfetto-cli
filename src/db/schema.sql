@@ -6,14 +6,17 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    name           TEXT NOT NULL,
-    package_name   TEXT NOT NULL,
-    device_serial  TEXT,
-    config_json    TEXT NOT NULL,
-    folder_path    TEXT NOT NULL,
-    created_at     TEXT NOT NULL,
-    notes          TEXT,
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                 TEXT NOT NULL,
+    package_name         TEXT NOT NULL,
+    device_serial        TEXT,
+    config_json          TEXT NOT NULL,
+    folder_path          TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    notes                TEXT,
+    is_imported          INTEGER NOT NULL DEFAULT 0,
+    benchmark_json_path  TEXT,
+    import_source_dir    TEXT,
     FOREIGN KEY (device_serial) REFERENCES devices(serial)
 );
 

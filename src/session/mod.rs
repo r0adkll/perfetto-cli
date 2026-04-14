@@ -17,6 +17,20 @@ pub struct Session {
     pub folder_path: PathBuf,
     pub created_at: DateTime<Utc>,
     pub notes: Option<String>,
+    /// Marks sessions produced by `perfetto-cli import`. Imported sessions
+    /// cannot re-capture, so the session detail view swaps the textproto
+    /// preview for a Macrobenchmark metrics summary on the right pane.
+    #[serde(default)]
+    pub is_imported: bool,
+    /// Path to the copied `-benchmarkData.json` file inside the session
+    /// folder. `None` for non-imported sessions.
+    #[serde(default)]
+    pub benchmark_json_path: Option<PathBuf>,
+    /// The original Macrobenchmark output directory this session was imported
+    /// from. Kept for debugging and potential re-import. `None` for
+    /// non-imported sessions.
+    #[serde(default)]
+    pub import_source_dir: Option<PathBuf>,
 }
 
 impl Session {

@@ -54,6 +54,14 @@ dist plan                   # dry-run what a release would publish
 dist build --artifacts=local --target <triple>   # build one release target locally
 ```
 
+**Worktrees need a `.env` copy.** `build.rs` panics if `PERFETTO_GOOGLE_CLIENT_ID`
+and `PERFETTO_GOOGLE_CLIENT_SECRET` aren't reachable, and `.env` is gitignored —
+so a fresh worktree won't build until you copy it over:
+
+```bash
+cp ../../.env .
+```
+
 ## Conventions
 
 - **Every text field goes through `tui::text_input::apply()` (or

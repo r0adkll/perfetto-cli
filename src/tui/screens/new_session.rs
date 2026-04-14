@@ -538,6 +538,9 @@ impl NewSessionScreen {
             folder_path: folder,
             created_at,
             notes: None,
+            is_imported: false,
+            benchmark_json_path: None,
+            import_source_dir: None,
         };
 
         if let Err(e) = session.ensure_filesystem() {

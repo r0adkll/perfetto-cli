@@ -11,6 +11,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 use crate::cloud::{self, UploadProgress};
 use crate::db::Database;
 use crate::db::traces::TraceRecord;
+use crate::import::Benchmark;
+use crate::import::benchmark_json;
 use crate::perfetto::capture::Cancel;
 use crate::perfetto::textproto;
 use crate::session::Session;
@@ -45,6 +47,12 @@ pub struct SessionDetailScreen {
     cloud_provider_id: String,
     /// Name of the active cloud provider (e.g. "Google Drive", "Amazon S3").
     cloud_provider_name: String,
+    /// Parsed macrobenchmark metrics for imported sessions. Populated once in
+    /// `new` from `session.benchmark_json_path`; `None` for non-imported
+    /// sessions or when parsing failed (benchmark_load_error carries the
+    /// reason).
+    benchmarks: Option<Vec<Benchmark>>,
+    benchmark_load_error: Option<String>,
 }
 
 enum Mode {
@@ -88,6 +96,7 @@ pub enum DetailAction {
 
 impl SessionDetailScreen {
     pub fn new(session: Session, db: &Database, cloud_provider_id: &str, cloud_provider_name: &str) -> Self {
+        let (benchmarks, benchmark_load_error) = load_benchmarks(&session);
         let mut screen = Self {
             session,
             traces: Vec::new(),
@@ -101,6 +110,8 @@ impl SessionDetailScreen {
             upload_cancel: None,
             cloud_provider_id: cloud_provider_id.to_string(),
             cloud_provider_name: cloud_provider_name.to_string(),
+            benchmarks,
+            benchmark_load_error,
         };
         screen.reload(db);
         screen
@@ -677,6 +688,15 @@ impl SessionDetailScreen {
         let traces_area = left_rows[1];
 
         if let Some(right_area) = right_area {
+            // Imported sessions replace the textproto preview with a
+            // macrobenchmark metrics summary — the textproto here is a
+            // placeholder stub, and the JSON the user actually cares about
+            // is next to the traces.
+            let show_benchmark_summary =
+                self.session.is_imported && self.benchmarks.is_some();
+            // Startup commands don't apply to imported sessions, but the
+            // check on `startup_commands` already covers that (imports leave
+            // it empty).
             let has_commands = !self.session.config.startup_commands.is_empty();
             let (proto_area, cmd_area) = if has_commands {
                 let rows = Layout::default()
@@ -691,16 +711,50 @@ impl SessionDetailScreen {
                 (right_area, None)
             };
 
-            let textproto = textproto::build(&self.session.config);
-            let preview = Paragraph::new(textproto)
+            if show_benchmark_summary {
+                let lines = benchmark_summary_lines(self.benchmarks.as_deref().unwrap_or(&[]));
+                let preview = Paragraph::new(lines)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Benchmark results "),
+                    )
+                    .scroll((self.preview_scroll, 0))
+                    .wrap(Wrap { trim: false });
+                frame.render_widget(preview, proto_area);
+            } else if self.session.is_imported {
+                // Imported session, but no benchmarks parsed — show the
+                // load error or a helpful stub.
+                let msg = self
+                    .benchmark_load_error
+                    .clone()
+                    .unwrap_or_else(|| "No benchmark JSON found for this session.".into());
+                let preview = Paragraph::new(vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!("  {msg}"),
+                        Style::default().fg(theme::err()),
+                    )),
+                ])
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Config (textproto) "),
+                        .title(" Benchmark results "),
                 )
-                .scroll((self.preview_scroll, 0))
                 .wrap(Wrap { trim: false });
-            frame.render_widget(preview, proto_area);
+                frame.render_widget(preview, proto_area);
+            } else {
+                let textproto = textproto::build(&self.session.config);
+                let preview = Paragraph::new(textproto)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title(" Config (textproto) "),
+                    )
+                    .scroll((self.preview_scroll, 0))
+                    .wrap(Wrap { trim: false });
+                frame.render_widget(preview, proto_area);
+            }
 
             if let Some(cmd_area) = cmd_area {
                 let lines: Vec<Line> = self
@@ -1093,5 +1147,97 @@ fn strip_trace_ext(s: &str) -> &str {
         &s[..s.len() - TRACE_EXT.len()]
     } else {
         s
+    }
+}
+
+/// Parse the macrobenchmark JSON for imported sessions once, at screen
+/// construction. Returns (benchmarks, error) — either the Vec or a
+/// human-readable error string, never both.
+fn load_benchmarks(session: &Session) -> (Option<Vec<Benchmark>>, Option<String>) {
+    if !session.is_imported {
+        return (None, None);
+    }
+    let Some(path) = session.benchmark_json_path.as_ref() else {
+        return (None, None);
+    };
+    match benchmark_json::parse(path) {
+        Ok(bms) => (Some(bms), None),
+        Err(e) => (None, Some(e.to_string())),
+    }
+}
+
+/// Build the lines that render the macrobenchmark summary on the right pane
+/// of an imported session. Each benchmark contributes a heading plus one line
+/// per metric with min/median/max.
+fn benchmark_summary_lines(benchmarks: &[Benchmark]) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if benchmarks.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no benchmarks in JSON)",
+            theme::hint(),
+        )));
+        return lines;
+    }
+    for (i, b) in benchmarks.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{}.{}", short_class(&b.class_name), b.method_name),
+                Style::default()
+                    .fg(theme::accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        if b.metrics.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (no metrics)",
+                theme::hint(),
+            )));
+            continue;
+        }
+        for m in &b.metrics {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(
+                    m.name.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            let body = if m.runs.is_empty()
+                && m.minimum == 0.0
+                && m.median == 0.0
+                && m.maximum == 0.0
+            {
+                "      (unparsed — see JSON)".to_string()
+            } else {
+                format!(
+                    "      min {}  ·  median {}  ·  max {}  ({} run{})",
+                    fmt_num(m.minimum),
+                    fmt_num(m.median),
+                    fmt_num(m.maximum),
+                    m.runs.len(),
+                    if m.runs.len() == 1 { "" } else { "s" },
+                )
+            };
+            lines.push(Line::from(Span::styled(body, theme::hint())));
+        }
+    }
+    lines
+}
+
+fn short_class(fqcn: &str) -> &str {
+    fqcn.rsplit('.').next().unwrap_or(fqcn)
+}
+
+/// Format a macrobenchmark numeric value: integer when it's whole, otherwise
+/// 3 significant decimals.
+fn fmt_num(v: f64) -> String {
+    if v == v.trunc() && v.abs() < 1e12 {
+        format!("{:.0}", v)
+    } else {
+        format!("{:.3}", v)
     }
 }

@@ -182,19 +182,31 @@ impl SessionsListScreen {
                         .as_deref()
                         .unwrap_or("(no device)")
                         .to_string();
-                    ListItem::new(Line::from(vec![
+                    let mut spans = vec![
                         Span::raw("  "),
                         Span::styled(
                             s.name.clone(),
                             Style::default().add_modifier(Modifier::BOLD),
                         ),
+                    ];
+                    if s.is_imported {
+                        spans.push(Span::raw(" "));
+                        spans.push(Span::styled(
+                            "[imported]",
+                            Style::default()
+                                .fg(theme::accent_secondary())
+                                .add_modifier(Modifier::DIM),
+                        ));
+                    }
+                    spans.extend([
                         Span::raw("  "),
                         Span::styled(format!("({})", s.package_name), theme::hint()),
                         Span::raw("  "),
                         Span::styled(date, theme::hint()),
                         Span::raw("  "),
                         Span::styled(format!("[{device}]"), theme::hint()),
-                    ]))
+                    ]);
+                    ListItem::new(Line::from(spans))
                 })
                 .collect();
             let list = List::new(items)

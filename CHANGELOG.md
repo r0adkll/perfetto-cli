@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `perfetto-cli clear` subcommand — wipes the local SQLite database and sessions directory after a typed `yes` confirmation (`-y`/`--yes` skips the prompt); themes and logs are preserved
+- `perfetto-cli import <dir> [--name <prefix>]` subcommand — imports an Android Macrobenchmark output directory (the `connected_android_test_additional_output/.../<device>/` folder) as one read-only session per `@Test` method, copying the `-benchmarkData.json` and every matching iteration trace into the session folder
+- Session detail right pane shows a benchmark metrics summary (per-metric min/median/max + run count) for imported sessions, replacing the textproto preview that doesn't apply to opaque imported configs
+- Sessions list shows a dim `[imported]` tag next to imported sessions
+- Three new `sessions` columns (`is_imported`, `benchmark_json_path`, `import_source_dir`) with an additive migration so existing databases upgrade in place
 
 ## [0.4.1] - 2026-04-13
 
