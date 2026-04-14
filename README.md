@@ -31,6 +31,8 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 | 🏷️ | **Trace management** | Rename, tag, delete, filter by tag |
 | 🌐 | **ui.perfetto.dev handoff** | One-key open via a short-lived local HTTP server with optional startup commands |
 | 🧩 | **Startup commands** | Build reusable command sets from a 14-command catalog and pass them to the Perfetto UI on open |
+| 🔬 | **Local trace analysis** | PerfettoSQL queries via a bundled `trace_processor_shell` — Summary dashboard, SQL REPL, and per-app saved metrics |
+| 📥 | **Macrobenchmark import** | `perfetto-cli import <dir>` turns a Macrobenchmark output directory into read-only sessions, one per `@Test` method |
 | ☁️ | **Cloud upload** | Upload traces to Google Drive or Amazon S3 with progress, cancellation, and shareable links |
 | 🔀 | **Multi-provider picker** | Choose which cloud provider to upload to or share from when multiple are configured |
 | 🎨 | **Theming** | 39 built-in themes via a searchable picker, plus custom themes in `~/.config/perfetto-cli/themes/` |
@@ -73,8 +75,9 @@ perfetto-cli
 1. `d` — confirm your device is online, optionally nickname it
 2. `n` — create a session (name, package with suggestions, device)
 3. `e` — edit the trace config (probe toggles, atrace categories, poll intervals)
-4. `c` — capture a trace
+4. `c` — capture a trace (use `C` to name the trace file before capturing)
 5. `o` — open it in ui.perfetto.dev
+6. `a` — analyze a trace locally (Summary dashboard + SQL REPL)
 
 ## Config editor
 
@@ -93,6 +96,29 @@ Press `e` on any session. The editor mirrors the [perfetto recorder UI](https://
 Each probe group expands to show sub-options with descriptions. Toggles that have a poll interval reveal a number field when enabled. The right panel shows the generated textproto updating live.
 
 `Ctrl-S` saves. `Esc` cancels. `Space` toggles. `Enter` expands groups or starts editing fields. `←` collapses from inside a group.
+
+## Local trace analysis
+
+Press `a` on any trace in session detail. The Analysis screen spawns a pinned-version `trace_processor_shell` (downloaded + SHA-256 verified on first use, cached under `~/.config/perfetto-cli/bin/`), parses the trace, and runs PerfettoSQL queries locally — no upload required.
+
+| Tab | What it shows |
+|---|---|
+| **Summary** | Context strip (package · device · captured-at · duration), three health tiles (jank rate, frame times p50/p95, main-thread busy %), conditional startup card, memory-over-time sparkline, main-thread hotspots, a Custom metrics section driven by your saved queries, and a data-sources ribbon. Press `[c]` to toggle compact mode |
+| **SQL** | Three stacked panes: saved metrics list · result · multi-line editor. All actions via visible `Alt+` chords: `Alt+Enter` run, `Alt+S` save/update, `Alt+L` load highlighted, `Alt+N` new, `Alt+R` rename, `Alt+D` delete, `Alt+I` open the built-in query library (~9 curated PerfettoSQL examples), `Alt+Up`/`Alt+Down` cycle the highlight |
+
+Saved metrics are scoped per-app (keyed on `(package_name, name)`) and auto-run on every Summary refresh, so they build a dashboard tailored to each app and persist across every session for the same package.
+
+`Tab` / `Shift-Tab` switch tabs. `Ctrl+Q` / `Ctrl+C` exit; `Ctrl+O` opens the trace in `ui.perfetto.dev`. Result tables scroll on `Shift+Up`/`Down` and `PageUp`/`PageDown`.
+
+## CLI subcommands
+
+```bash
+perfetto-cli                          # launch the TUI (default)
+perfetto-cli import <dir> [--name X]  # import a Macrobenchmark output dir as one session per @Test method
+perfetto-cli clear [-y|--yes]         # wipe the local DB and sessions directory (themes/logs preserved)
+```
+
+`import` expects the `connected_android_test_additional_output/.../<device>/` folder produced by Macrobenchmark; it copies each `-benchmarkData.json` plus matching iteration traces into a read-only session and shows a benchmark metrics summary (per-metric min/median/max + run count) on session detail.
 
 ## Theming
 
@@ -140,7 +166,7 @@ src/
 ## Testing
 
 ```bash
-cargo test   # 54 tests
+cargo test   # 141 tests
 ```
 
 ## Releasing
