@@ -11,8 +11,8 @@ impl Database {
         let conn = self.lock();
         let config_json = serde_json::to_string(&session.config)?;
         conn.execute(
-            "INSERT INTO sessions (name, package_name, device_serial, config_json, folder_path, created_at, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO sessions (name, package_name, device_serial, config_json, folder_path, created_at, notes, is_imported, benchmark_json_path, import_source_dir)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 session.name,
                 session.package_name,
@@ -21,6 +21,9 @@ impl Database {
                 session.folder_path.to_string_lossy(),
                 session.created_at.to_rfc3339(),
                 session.notes,
+                session.is_imported as i64,
+                session.benchmark_json_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                session.import_source_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -29,7 +32,7 @@ impl Database {
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, name, package_name, device_serial, config_json, folder_path, created_at, notes
+            "SELECT id, name, package_name, device_serial, config_json, folder_path, created_at, notes, is_imported, benchmark_json_path, import_source_dir
              FROM sessions ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -42,6 +45,9 @@ impl Database {
                 folder_path: row.get(5)?,
                 created_at: row.get(6)?,
                 notes: row.get(7)?,
+                is_imported: row.get::<_, i64>(8)? != 0,
+                benchmark_json_path: row.get(9)?,
+                import_source_dir: row.get(10)?,
             })
         })?;
 
@@ -63,6 +69,9 @@ impl Database {
                 folder_path: r.folder_path.into(),
                 created_at,
                 notes: r.notes,
+                is_imported: r.is_imported,
+                benchmark_json_path: r.benchmark_json_path.map(Into::into),
+                import_source_dir: r.import_source_dir.map(Into::into),
             });
         }
         Ok(out)
@@ -113,4 +122,7 @@ struct Row {
     folder_path: String,
     created_at: String,
     notes: Option<String>,
+    is_imported: bool,
+    benchmark_json_path: Option<String>,
+    import_source_dir: Option<String>,
 }

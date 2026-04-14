@@ -36,6 +36,20 @@ impl Database {
             conn.execute_batch("ALTER TABLE traces ADD COLUMN remote_url TEXT")?;
         }
 
+        // Columns added when the Macrobenchmark import feature landed. Older
+        // databases predate these and need the ALTERs; new ones already have
+        // them from schema.sql.
+        let has_is_imported = conn
+            .prepare("SELECT is_imported FROM sessions LIMIT 0")
+            .is_ok();
+        if !has_is_imported {
+            conn.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN is_imported INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN benchmark_json_path TEXT;
+                 ALTER TABLE sessions ADD COLUMN import_source_dir TEXT;",
+            )?;
+        }
+
         Ok(())
     }
 
