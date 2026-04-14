@@ -316,6 +316,10 @@ pub struct SummaryState {
     package_name: String,
     captured_at: String,
     custom: CustomMetricsState,
+    /// When true, custom-metric tables collapse to a single-line
+    /// "N rows" tile. Toggled by `c` on the Summary tab so a dense
+    /// dashboard can shrink to a scannable overview on demand.
+    compact_custom: bool,
 }
 
 /// Per-app saved queries plus their most recent result state. Mirrors the
@@ -358,7 +362,18 @@ impl SummaryState {
             package_name,
             captured_at,
             custom,
+            compact_custom: false,
         }
+    }
+
+    /// Flip between expanded (tables show up to 4 rows) and compact
+    /// (tables collapse to a 1-line tile). Preserves all cached results.
+    pub fn toggle_compact_custom(&mut self) {
+        self.compact_custom = !self.compact_custom;
+    }
+
+    pub fn compact_custom(&self) -> bool {
+        self.compact_custom
     }
 
     /// Reset every canned cell back to Pending and replace the custom-query
@@ -419,19 +434,23 @@ impl SummaryState {
             self.cells.get(&SummaryKey::RssOverTime),
             Some(CellState::Rows(rows)) if !rows.is_empty()
         );
-        // Budget for the Custom metrics section: subtract the always-present
-        // regions (context + health + ribbon + min hotspots) and any
-        // conditional sections, then cap at half of what's left so custom
-        // metrics can't starve the rest of Summary.
-        let mut reserved: u16 = 3 /* context */ + 3 /* health */ + 3 /* ribbon */ + 5 /* min hotspots */;
+        // Budget for the Custom metrics section: claim everything left
+        // after the always-present regions (context + health + ribbon +
+        // min hotspots) and any conditional sections. Hotspots is a
+        // `Min(3)` so it still gets its minimum even when custom fills
+        // the rest. `c` toggles a compact mode that collapses tables to
+        // one-line tiles for a high-density overview.
+        let mut reserved: u16 = 3 /* context */ + 3 /* health */ + 3 /* ribbon */ + 3 /* min hotspots */;
         if show_startup {
             reserved = reserved.saturating_add(3);
         }
         if show_memory {
             reserved = reserved.saturating_add(5);
         }
-        let custom_max = area.height.saturating_sub(reserved) / 2;
-        let custom_height = self.custom.rendered_height(custom_max);
+        let custom_max = area.height.saturating_sub(reserved);
+        let custom_height = self
+            .custom
+            .rendered_height_with(custom_max, self.compact_custom);
 
         let mut constraints = vec![
             Constraint::Length(3), // context strip
@@ -469,7 +488,7 @@ impl SummaryState {
         self.render_main_thread_hotspots(frame, chunks[idx]);
         idx += 1;
         if custom_height > 0 {
-            self.custom.render(frame, chunks[idx]);
+            self.custom.render(frame, chunks[idx], self.compact_custom);
             idx += 1;
         }
         self.render_trace_contents_ribbon(frame, chunks[idx]);
@@ -856,7 +875,16 @@ impl CustomMetricsState {
         self.results.insert(name, state);
     }
 
+    #[cfg(test)]
     fn shape_for(state: Option<&CustomResultState>) -> CardShape<'_> {
+        Self::shape_for_with(state, false)
+    }
+
+    /// Classify a single result into a `CardShape`. When `compact` is
+    /// true, multi-row `Table` shapes collapse to a `Tile` displaying
+    /// the row count — tiles, empty, pending, and error shapes are
+    /// unaffected (they're already single-line friendly).
+    fn shape_for_with(state: Option<&CustomResultState>, compact: bool) -> CardShape<'_> {
         match state {
             None | Some(CustomResultState::Pending) => CardShape::Pending,
             Some(CustomResultState::Error(msg)) => CardShape::Error(msg),
@@ -870,6 +898,14 @@ impl CustomMetricsState {
                         .and_then(|r| r.cells().first())
                         .map(cell_display)
                         .unwrap_or_else(|| "—".into());
+                    CardShape::Tile { value }
+                } else if compact {
+                    let n = qr.rows.len();
+                    let value = if n == 1 {
+                        "1 row".into()
+                    } else {
+                        format!("{n} rows")
+                    };
                     CardShape::Tile { value }
                 } else {
                     CardShape::Table {
@@ -887,11 +923,16 @@ impl CustomMetricsState {
     /// row each. Returns 0 when the section is empty so the parent
     /// collapses the constraint. Caps at `max_height` — anything
     /// beyond becomes the overflow indicator.
+    #[cfg(test)]
     fn rendered_height(&self, max_height: u16) -> u16 {
+        self.rendered_height_with(max_height, false)
+    }
+
+    fn rendered_height_with(&self, max_height: u16, compact: bool) -> u16 {
         if self.queries.is_empty() {
             return 0;
         }
-        let cards = self.classify();
+        let cards = self.classify_with(compact);
         let mut h: u16 = 0;
         let mut tile_in_progress = 0u16; // tiles staged for the current row
         for (_, shape) in &cards {
@@ -915,22 +956,22 @@ impl CustomMetricsState {
         h.min(max_height)
     }
 
-    fn classify(&self) -> Vec<(&str, CardShape<'_>)> {
+    fn classify_with(&self, compact: bool) -> Vec<(&str, CardShape<'_>)> {
         self.queries
             .iter()
             .map(|q| {
                 let state = self.results.get(&q.name);
-                (q.name.as_str(), Self::shape_for(state))
+                (q.name.as_str(), Self::shape_for_with(state, compact))
             })
             .collect()
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    fn render(&self, frame: &mut Frame, area: Rect, compact: bool) {
         if self.queries.is_empty() || area.height < CUSTOM_TILE_HEIGHT {
             return;
         }
         let dim = Style::default().fg(theme::dim());
-        let cards = self.classify();
+        let cards = self.classify_with(compact);
 
         // Pack tiles into rows of CUSTOM_TILES_PER_ROW (preserving the
         // declaration order across tile/table classes), then track how
@@ -1947,6 +1988,52 @@ mod tests {
         cs.on_result("a".into(), Ok(qr_multi_row(10)));
         let expected = 2 + 1 + CUSTOM_TABLE_VISIBLE_ROWS as u16 + 1;
         assert_eq!(cs.rendered_height(100), expected);
+    }
+
+    #[test]
+    fn compact_collapses_tables_into_tiles_with_row_count() {
+        // In compact mode, a multi-row result that would render as a
+        // Table becomes a Tile displaying "N rows".
+        let done = CustomResultState::Done(qr_multi_row(7));
+        match CustomMetricsState::shape_for_with(Some(&done), true) {
+            CardShape::Tile { value } => assert_eq!(value, "7 rows"),
+            other => panic!("expected Tile, got {other:?}"),
+        }
+        // Compact with exactly one row uses singular.
+        let one = CustomResultState::Done(QueryResult {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![Row::new_for_test(vec![Cell::Int(1), Cell::Int(2)])],
+            elapsed_ms: None,
+        });
+        match CustomMetricsState::shape_for_with(Some(&one), true) {
+            CardShape::Tile { value } => assert_eq!(value, "1 row"),
+            other => panic!("expected Tile, got {other:?}"),
+        }
+        // Compact doesn't affect 1×1 Tile results.
+        let tile = CustomResultState::Done(qr_1x1(Cell::Int(42)));
+        assert!(matches!(
+            CustomMetricsState::shape_for_with(Some(&tile), true),
+            CardShape::Tile { .. }
+        ));
+    }
+
+    #[test]
+    fn compact_mode_fits_in_less_space() {
+        // Three table-shaped queries expanded vs compact.
+        let mut cs = CustomMetricsState::new(vec![
+            custom_query("a", "1"),
+            custom_query("b", "2"),
+            custom_query("c", "3"),
+        ]);
+        cs.on_result("a".into(), Ok(qr_multi_row(8)));
+        cs.on_result("b".into(), Ok(qr_multi_row(8)));
+        cs.on_result("c".into(), Ok(qr_multi_row(8)));
+        let expanded = cs.rendered_height_with(100, false);
+        let compact = cs.rendered_height_with(100, true);
+        assert!(
+            compact < expanded,
+            "compact ({compact}) should be strictly smaller than expanded ({expanded})"
+        );
     }
 
     #[test]

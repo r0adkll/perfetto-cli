@@ -326,15 +326,29 @@ impl AnalysisScreen {
         // Tab-specific routing.
         match (&mut self.state, self.tab) {
             (State::Ready { .. }, Tab::Summary) => {
-                if key.code == KeyCode::Char('r') {
-                    let custom_queries = self.load_custom_queries();
-                    if let State::Ready { summary, .. } = &mut self.state {
-                        summary.reset(custom_queries.clone());
-                        if let Some(tx) = &self.worker_tx {
-                            let _ = tx.send(WorkerRequest::RunSummary { custom_queries });
+                match key.code {
+                    KeyCode::Char('r') => {
+                        let custom_queries = self.load_custom_queries();
+                        if let State::Ready { summary, .. } = &mut self.state {
+                            summary.reset(custom_queries.clone());
+                            if let Some(tx) = &self.worker_tx {
+                                let _ = tx.send(WorkerRequest::RunSummary { custom_queries });
+                            }
+                            self.set_status("refreshing summary".into());
                         }
-                        self.set_status("refreshing summary".into());
                     }
+                    KeyCode::Char('c') => {
+                        if let State::Ready { summary, .. } = &mut self.state {
+                            summary.toggle_compact_custom();
+                            let msg = if summary.compact_custom() {
+                                "custom metrics · compact"
+                            } else {
+                                "custom metrics · expanded"
+                            };
+                            self.set_status(msg.into());
+                        }
+                    }
+                    _ => {}
                 }
                 AnalysisAction::None
             }
@@ -502,6 +516,7 @@ impl AnalysisScreen {
             (State::Ready { .. }, Tab::Summary) => &[
                 ("[1/2]", " tab  "),
                 ("[r]", " refresh  "),
+                ("[c]", " compact  "),
                 ("[o]", " open in UI  "),
                 ("[q]", " back"),
             ],
