@@ -233,7 +233,11 @@ impl CaptureScreen {
         ]);
         frame.render_widget(
             Paragraph::new(status_line)
-                .block(Block::default().borders(Borders::ALL).title(" Status ")),
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(Span::styled(" Status ", theme::title())),
+                ),
             rows[1],
         );
 
@@ -247,7 +251,11 @@ impl CaptureScreen {
             theme::accent()
         };
         let gauge = Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title(" Progress "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(" Progress ", theme::title())),
+            )
             .gauge_style(Style::default().fg(gauge_color).bg(Color::Black))
             .ratio(self.progress_ratio())
             .label(format!(
@@ -313,7 +321,11 @@ impl CaptureScreen {
         }
 
         let logs = Paragraph::new(log_lines)
-            .block(Block::default().borders(Borders::ALL).title(" Log "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(" Log ", theme::title())),
+            )
             .wrap(Wrap { trim: false });
         frame.render_widget(logs, rows[3]);
 

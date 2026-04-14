@@ -143,7 +143,9 @@ impl SessionsListScreen {
         )));
         frame.render_widget(header, chunks[0]);
 
-        let body_block = Block::default().borders(Borders::ALL).title(" Sessions ");
+        let body_block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(" Sessions ", theme::title()));
 
         if let Some(err) = &self.error {
             let p = Paragraph::new(Line::from(Span::styled(

@@ -725,7 +725,7 @@ impl SessionDetailScreen {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title(" Benchmark results "),
+                            .title(Span::styled(" Benchmark results ", theme::title())),
                     )
                     .scroll((self.preview_scroll, 0))
                     .wrap(Wrap { trim: false });
@@ -747,7 +747,7 @@ impl SessionDetailScreen {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Benchmark results "),
+                        .title(Span::styled(" Benchmark results ", theme::title())),
                 )
                 .wrap(Wrap { trim: false });
                 frame.render_widget(preview, proto_area);
@@ -757,7 +757,7 @@ impl SessionDetailScreen {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title(" Config (textproto) "),
+                            .title(Span::styled(" Config (textproto) ", theme::title())),
                     )
                     .scroll((self.preview_scroll, 0))
                     .wrap(Wrap { trim: false });
@@ -805,9 +805,12 @@ impl SessionDetailScreen {
                 let cmd_block = Paragraph::new(lines).block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(format!(
-                            " Startup Commands ({}) ",
-                            self.session.config.startup_commands.len()
+                        .title(Span::styled(
+                            format!(
+                                " Startup Commands ({}) ",
+                                self.session.config.startup_commands.len()
+                            ),
+                            theme::title(),
                         )),
                 );
                 frame.render_widget(cmd_block, cmd_area);
@@ -857,7 +860,11 @@ impl SessionDetailScreen {
         ];
         frame.render_widget(
             Paragraph::new(metadata_lines)
-                .block(Block::default().borders(Borders::ALL).title(" Session ")),
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(Span::styled(" Session ", theme::title())),
+                ),
             meta_area,
         );
 
@@ -865,7 +872,9 @@ impl SessionDetailScreen {
             Some(tag) => format!(" Traces — filter: {tag} "),
             None => " Traces ".into(),
         };
-        let traces_block = Block::default().borders(Borders::ALL).title(title);
+        let traces_block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(title, theme::title()));
 
         if let Some(err) = &self.error {
             frame.render_widget(

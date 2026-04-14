@@ -391,7 +391,7 @@ impl CloudProvidersScreen {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Providers ");
+            .title(Span::styled(" Providers ", theme::title()));
 
         if self.providers.is_empty() {
             frame.render_widget(

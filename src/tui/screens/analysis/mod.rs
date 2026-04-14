@@ -595,7 +595,7 @@ fn render_preparing(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(Span::styled(" Loading trace ", theme::hint())),
+                .title(Span::styled(" Loading trace ", theme::title())),
         )
         .gauge_style(
             Style::default()

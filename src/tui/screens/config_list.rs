@@ -218,7 +218,7 @@ impl ConfigListScreen {
 
         let body_block = Block::default()
             .borders(Borders::ALL)
-            .title(" Saved Configs ");
+            .title(Span::styled(" Saved Configs ", theme::title()));
 
         if let Some(err) = &self.error {
             frame.render_widget(

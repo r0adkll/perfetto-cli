@@ -332,7 +332,10 @@ impl CommandSetEditorScreen {
     fn render_command_list(&mut self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Commands ({}) ", self.commands.len()));
+            .title(Span::styled(
+                format!(" Commands ({}) ", self.commands.len()),
+                theme::title(),
+            ));
 
         if self.commands.is_empty() {
             frame.render_widget(
@@ -403,7 +406,7 @@ impl CommandSetEditorScreen {
     fn render_detail(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Command Detail ");
+            .title(Span::styled(" Command Detail ", theme::title()));
 
         let Some(idx) = self.list_state.selected() else {
             frame.render_widget(
@@ -500,7 +503,7 @@ impl CommandSetEditorScreen {
     fn render_picker(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Pick a command ");
+            .title(Span::styled(" Pick a command ", theme::title()));
 
         let items: Vec<ListItem> = COMMAND_CATALOG
             .iter()
