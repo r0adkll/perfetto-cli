@@ -575,8 +575,15 @@ impl SummaryState {
     }
 
     fn render_peak_rss_tile(&self, frame: &mut Frame, area: Rect) {
+        // Perfetto's `mem.rss` counter is stored as a double — `MAX(value)`
+        // preserves that type, so we have to accept both `Cell::Float`
+        // and `Cell::Int` here. Earlier versions only matched `Int`
+        // which made this tile always render `—` on real traces.
         let text = match self.cells.get(&SummaryKey::PeakRssBytes) {
             Some(CellState::Ready(Cell::Int(bytes))) if *bytes > 0 => format_bytes(*bytes as u64),
+            Some(CellState::Ready(Cell::Float(bytes))) if *bytes > 0.0 => {
+                format_bytes(*bytes as u64)
+            }
             Some(CellState::Ready(_)) => "—".into(),
             Some(CellState::Pending) => "…".into(),
             _ => "—".into(),
