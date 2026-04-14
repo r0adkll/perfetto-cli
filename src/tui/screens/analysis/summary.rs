@@ -530,7 +530,7 @@ impl SummaryState {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(dim)
-            .title(Span::styled(" Context ", dim));
+            .title(Span::styled(" Context ", theme::title()));
         let para = Paragraph::new(line).block(block).alignment(Alignment::Left);
         frame.render_widget(para, area);
     }
@@ -559,7 +559,7 @@ impl SummaryState {
         let (text, severity) = format_jank_rate(jank, total);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" Jank rate ", Style::default().fg(theme::dim())));
+            .title(Span::styled(" Jank rate ", theme::title()));
         let para = Paragraph::new(Line::from(Span::styled(text, severity_style(severity))))
             .block(block)
             .alignment(Alignment::Center);
@@ -572,10 +572,7 @@ impl SummaryState {
         let value_style = severity_style(severity);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(
-                " Frame times ",
-                Style::default().fg(theme::dim()),
-            ));
+            .title(Span::styled(" Frame times ", theme::title()));
         let para = Paragraph::new(Line::from(Span::styled(text, value_style)))
             .block(block)
             .alignment(Alignment::Center);
@@ -588,10 +585,7 @@ impl SummaryState {
         let (text, severity) = format_main_thread_busy(running, total);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(
-                " Main-thread busy ",
-                Style::default().fg(theme::dim()),
-            ));
+            .title(Span::styled(" Main-thread busy ", theme::title()));
         let para = Paragraph::new(Line::from(Span::styled(text, severity_style(severity))))
             .block(block)
             .alignment(Alignment::Center);
@@ -606,7 +600,7 @@ impl SummaryState {
         let dim = Style::default().fg(theme::dim());
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" Startup ", dim));
+            .title(Span::styled(" Startup ", theme::title()));
 
         let row = match self.cells.get(&SummaryKey::StartupInfo) {
             Some(CellState::Rows(rows)) => rows.first(),
@@ -693,10 +687,9 @@ impl SummaryState {
 
     fn render_main_thread_hotspots(&self, frame: &mut Frame, area: Rect) {
         let title = format!(" Main-thread hotspots · {} ", self.package_name);
-        let block = Block::default().borders(Borders::ALL).title(Span::styled(
-            title,
-            Style::default().fg(theme::dim()),
-        ));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(title, theme::title()));
 
         match self.cells.get(&SummaryKey::MainThreadTopSlices) {
             Some(CellState::Pending) => {
@@ -790,7 +783,7 @@ impl SummaryState {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(dim)
-            .title(Span::styled(" Trace contents ", dim));
+            .title(Span::styled(" Trace contents ", theme::title()));
         let para = Paragraph::new(Line::from(spans))
             .block(block)
             .alignment(Alignment::Center);
@@ -1105,7 +1098,7 @@ fn render_tile_like(frame: &mut Frame, area: Rect, name: &str, shape: &CardShape
     let dim = Style::default().fg(theme::dim());
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(format!(" {name} "), dim));
+        .title(Span::styled(format!(" {name} "), theme::title()));
     let (text, style) = match shape {
         CardShape::Tile { value } => (
             value.clone(),
@@ -1161,7 +1154,7 @@ fn render_table_card(frame: &mut Frame, area: Rect, name: &str, shape: &CardShap
     let title = format!(" {name} · {total_rows} rows ");
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(title, dim));
+        .title(Span::styled(title, theme::title()));
     let table = Table::new(body, widths).header(header).block(block);
     frame.render_widget(table, area);
 

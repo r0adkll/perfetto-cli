@@ -660,7 +660,7 @@ impl NewSessionScreen {
     fn render_device_list(&mut self, frame: &mut Frame, area: Rect) {
         let device_block = Block::default()
             .borders(Borders::ALL)
-            .title(" Device ")
+            .title(Span::styled(" Device ", theme::title()))
             .border_style(focus_style(self.focus == Focus::Device));
 
         if self.loading_devices && self.devices.is_empty() {
@@ -729,7 +729,7 @@ impl NewSessionScreen {
     fn render_device_info(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Device Info ");
+            .title(Span::styled(" Device Info ", theme::title()));
 
         match &self.device_info {
             Some(info) => {
@@ -811,7 +811,7 @@ impl NewSessionScreen {
         };
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(title)
+            .title(Span::styled(title, theme::title()))
             .border_style(focus_style(focused));
 
         if self.suggestions.is_empty() {
@@ -861,7 +861,7 @@ impl NewSessionScreen {
         let focused = self.focus == Focus::Config;
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Config ")
+            .title(Span::styled(" Config ", theme::title()))
             .border_style(focus_style(focused));
 
         // Build items: "Default" first, then saved configs
@@ -902,7 +902,7 @@ impl NewSessionScreen {
         let focused = self.focus == Focus::Commands;
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Startup Commands ")
+            .title(Span::styled(" Startup Commands ", theme::title()))
             .border_style(focus_style(focused));
 
         let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
@@ -942,7 +942,7 @@ impl NewSessionScreen {
     ) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" {title} "))
+            .title(Span::styled(format!(" {title} "), theme::title()))
             .border_style(focus_style(focused));
         let content = if focused {
             format!(" {value}█")

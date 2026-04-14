@@ -181,7 +181,7 @@ impl CommandSetListScreen {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Command Sets ");
+            .title(Span::styled(" Command Sets ", theme::title()));
 
         if let Some(err) = &self.error {
             frame.render_widget(

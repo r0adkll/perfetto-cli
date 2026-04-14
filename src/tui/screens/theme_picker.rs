@@ -161,12 +161,7 @@ impl ThemePickerScreen {
         let outer = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme::accent()))
-            .title(Span::styled(
-                " Themes ",
-                Style::default()
-                    .fg(theme::accent())
-                    .add_modifier(Modifier::BOLD),
-            ));
+            .title(Span::styled(" Themes ", theme::title()));
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
 

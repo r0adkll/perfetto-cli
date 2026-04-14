@@ -660,7 +660,7 @@ impl ReplState {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(dim)
-            .title(Span::styled(title_text, dim))
+            .title(Span::styled(title_text, theme::title()))
             .title_bottom(hints);
 
         if self.saved.is_empty() {
@@ -723,7 +723,7 @@ impl ReplState {
     fn render_result(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" Result ", Style::default().fg(theme::dim())));
+            .title(Span::styled(" Result ", theme::title()));
         match &self.current {
             Current::Idle => {
                 let p = Paragraph::new("type PerfettoSQL and press Alt+Enter to run")
@@ -801,10 +801,7 @@ impl ReplState {
             .unwrap_or_default();
 
         let table = Table::new(body, widths).header(header).block(block.title(
-            Span::styled(
-                format!("{title}{elapsed}"),
-                Style::default().fg(theme::dim()),
-            ),
+            Span::styled(format!("{title}{elapsed}"), theme::title()),
         ));
         frame.render_widget(table, area);
     }
@@ -1069,7 +1066,7 @@ fn chord_hint_line(
     let dim = Style::default().fg(theme::dim());
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(pairs.len() * 3 + 2);
     if !prefix.is_empty() {
-        spans.push(Span::styled(prefix.to_string(), dim));
+        spans.push(Span::styled(prefix.to_string(), theme::title()));
     }
     for (i, (chord, verb)) in pairs.iter().enumerate() {
         if i > 0 {

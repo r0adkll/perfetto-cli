@@ -843,7 +843,11 @@ impl ConfigEditorScreen {
             lines.push(self.render_item(&self.items[idx], idx == self.cursor));
         }
         let form = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(" Config "));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(" Config ", theme::title())),
+            );
         frame.render_widget(form, area);
     }
 
@@ -997,7 +1001,11 @@ impl ConfigEditorScreen {
     fn render_preview(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let txt = textproto::build(&self.config);
         let preview = Paragraph::new(txt)
-            .block(Block::default().borders(Borders::ALL).title(" Textproto preview "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(" Textproto preview ", theme::title())),
+            )
             .scroll((self.preview_scroll, 0))
             .wrap(Wrap { trim: false });
         frame.render_widget(preview, area);

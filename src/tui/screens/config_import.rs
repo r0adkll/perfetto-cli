@@ -34,7 +34,10 @@ impl<'a> ConfigImportScreen<'a> {
         textarea.set_block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Paste or type textproto config "),
+                .title(Span::styled(
+                    " Paste or type textproto config ",
+                    theme::title(),
+                )),
         );
         textarea.set_cursor_line_style(Style::default());
         textarea.set_line_number_style(Style::default().fg(theme::dim()));
@@ -52,7 +55,10 @@ impl<'a> ConfigImportScreen<'a> {
         textarea.set_block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Edit imported textproto config "),
+                .title(Span::styled(
+                    " Edit imported textproto config ",
+                    theme::title(),
+                )),
         );
         textarea.set_cursor_line_style(Style::default());
         textarea.set_line_number_style(Style::default().fg(theme::dim()));
