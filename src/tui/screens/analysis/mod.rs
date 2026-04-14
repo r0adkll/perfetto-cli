@@ -4,6 +4,7 @@
 //! under the hood. Two tabs sit on top: a pre-canned summary and a raw SQL
 //! REPL.
 
+pub(crate) mod library;
 mod repl;
 pub(crate) mod summary;
 pub(crate) mod worker;

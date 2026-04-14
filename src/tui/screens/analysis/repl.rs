@@ -41,6 +41,7 @@ use crate::trace_processor::QueryResult;
 use crate::tui::text_input::{self, TextAction};
 use crate::tui::theme;
 
+use super::library::{self, LIBRARY};
 use super::summary::cell_display;
 
 /// Max rows we render from a single result. Decoder still materialises all
@@ -113,6 +114,9 @@ enum Mode {
     SaveAs { buffer: String },
     Rename { original: String, buffer: String },
     ConfirmDelete { name: String },
+    /// Library picker: browse out-of-box queries and load one into the
+    /// editor. Highlight tracks the currently-selected `LIBRARY` entry.
+    Library { highlight: usize },
 }
 
 pub struct ReplState {
@@ -133,6 +137,10 @@ pub struct ReplState {
     current: Current,
     scroll: u16,
     mode: Mode,
+    /// Name pre-filled into the SaveAs prompt when the user runs
+    /// `Alt+S` on a library-loaded query. Cleared on successful save
+    /// or on `Alt+N` (new).
+    suggested_save_name: Option<String>,
     /// Transient error from a modal prompt (empty name, rename collision).
     /// Parent polls via [`take_command_error`] and routes to its status
     /// bar.
@@ -162,6 +170,7 @@ impl ReplState {
             current: Current::Idle,
             scroll: 0,
             mode: Mode::Editing,
+            suggested_save_name: None,
             command_error: None,
         };
         this.reload_saved();
@@ -283,6 +292,7 @@ impl ReplState {
             Mode::SaveAs { .. } => return self.on_key_save_as(key),
             Mode::Rename { .. } => return self.on_key_rename(key),
             Mode::ConfirmDelete { .. } => return self.on_key_confirm_delete(key),
+            Mode::Library { .. } => return self.on_key_library(key),
             Mode::Editing => {}
         }
 
@@ -307,6 +317,10 @@ impl ReplState {
                 }
                 KeyCode::Char('d') | KeyCode::Char('D') => return self.start_delete(),
                 KeyCode::Char('r') | KeyCode::Char('R') => return self.start_rename(),
+                KeyCode::Char('i') | KeyCode::Char('I') => {
+                    self.mode = Mode::Library { highlight: 0 };
+                    return KeyOutcome::None;
+                }
                 KeyCode::Up => {
                     self.cycle_highlight(-1);
                     return KeyOutcome::None;
@@ -379,6 +393,7 @@ impl ReplState {
                         self.reload_saved();
                         self.highlight = self.saved.iter().position(|r| r.name == name);
                         self.editing = Some(name);
+                        self.suggested_save_name = None;
                         KeyOutcome::SavedMetricsChanged
                     }
                     Err(e) => {
@@ -442,6 +457,53 @@ impl ReplState {
         }
     }
 
+    fn on_key_library(&mut self, key: KeyEvent) -> KeyOutcome {
+        let current = match &self.mode {
+            Mode::Library { highlight } => *highlight,
+            _ => return KeyOutcome::None,
+        };
+        if LIBRARY.is_empty() {
+            // Degenerate; shouldn't happen since LIBRARY is a const.
+            self.mode = Mode::Editing;
+            return KeyOutcome::None;
+        }
+        let len = LIBRARY.len();
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Editing;
+                KeyOutcome::None
+            }
+            KeyCode::Enter => {
+                let entry = &LIBRARY[current];
+                let sql = library::render_sql(entry, &self.package_name);
+                self.editor = editor_with(&sql);
+                self.editing = None;
+                self.suggested_save_name = Some(entry.name.to_string());
+                self.mode = Mode::Editing;
+                KeyOutcome::None
+            }
+            KeyCode::Up => {
+                let next = if current == 0 { len - 1 } else { current - 1 };
+                self.mode = Mode::Library { highlight: next };
+                KeyOutcome::None
+            }
+            KeyCode::Down => {
+                let next = (current + 1) % len;
+                self.mode = Mode::Library { highlight: next };
+                KeyOutcome::None
+            }
+            KeyCode::PageUp | KeyCode::Home => {
+                self.mode = Mode::Library { highlight: 0 };
+                KeyOutcome::None
+            }
+            KeyCode::PageDown | KeyCode::End => {
+                self.mode = Mode::Library { highlight: len - 1 };
+                KeyOutcome::None
+            }
+            _ => KeyOutcome::None,
+        }
+    }
+
     fn on_key_confirm_delete(&mut self, key: KeyEvent) -> KeyOutcome {
         let name = match &self.mode {
             Mode::ConfirmDelete { name } => name.clone(),
@@ -499,6 +561,7 @@ impl ReplState {
                 Ok(_) => {
                     self.reload_saved();
                     self.highlight = self.saved.iter().position(|r| r.name == name);
+                    self.suggested_save_name = None;
                     return KeyOutcome::SavedMetricsChanged;
                 }
                 Err(e) => {
@@ -507,10 +570,11 @@ impl ReplState {
                 }
             }
         }
-        // Otherwise prompt for a name.
-        self.mode = Mode::SaveAs {
-            buffer: String::new(),
-        };
+        // Otherwise prompt for a name, seeding the buffer with any
+        // library-derived suggestion (keeps the "load from library →
+        // save" flow to a single keystroke on Enter).
+        let buffer = self.suggested_save_name.clone().unwrap_or_default();
+        self.mode = Mode::SaveAs { buffer };
         KeyOutcome::None
     }
 
@@ -530,6 +594,7 @@ impl ReplState {
     fn clear_editor_new(&mut self) {
         self.editor = fresh_editor(Mode::Editing, None, false);
         self.editing = None;
+        self.suggested_save_name = None;
     }
 
     fn start_delete(&mut self) -> KeyOutcome {
@@ -770,6 +835,7 @@ impl ReplState {
                 buffer,
             ),
             Mode::ConfirmDelete { name } => render_confirm_delete(frame, area, name),
+            Mode::Library { highlight } => render_library_picker(frame, area, *highlight),
         }
     }
 
@@ -777,12 +843,14 @@ impl ReplState {
         let dim = Style::default().fg(theme::dim());
         let dirty = self.is_dirty();
         let title_text = match (&self.editing, dirty) {
-            (None, _) => " SQL · new metric · [Alt+Enter] run · [Alt+S] save ".to_string(),
+            (None, _) => {
+                " SQL · new metric · [Alt+Enter] run · [Alt+S] save · [Alt+I] library ".to_string()
+            }
             (Some(name), false) => format!(
-                " SQL · editing {name} · [Alt+Enter] run · [Alt+S] update "
+                " SQL · editing {name} · [Alt+Enter] run · [Alt+S] update · [Alt+I] library "
             ),
             (Some(name), true) => format!(
-                " SQL · editing {name} * · [Alt+Enter] run · [Alt+S] update "
+                " SQL · editing {name} * · [Alt+Enter] run · [Alt+S] update · [Alt+I] library "
             ),
         };
         // Re-style each render — the inner block title lives on TextArea
@@ -820,6 +888,69 @@ fn render_name_prompt(frame: &mut Frame, area: Rect, title: &str, prompt: &str, 
     ]);
     let p = Paragraph::new(line).block(block);
     frame.render_widget(p, area);
+}
+
+fn render_library_picker(frame: &mut Frame, area: Rect, highlight: usize) {
+    let dim = Style::default().fg(theme::dim());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(dim)
+        .title(Span::styled(
+            format!(
+                " Library · {} queries · Enter to load · Esc to cancel ",
+                LIBRARY.len()
+            ),
+            dim,
+        ));
+
+    // The picker sits in the editor slot (INPUT_HEIGHT rows). Show a
+    // window of entries around the highlight so the highlight is always
+    // visible even when scrolled.
+    let inner_rows = area.height.saturating_sub(2) as usize;
+    let total = LIBRARY.len();
+    // Centre the window on the highlight where possible; clamp at
+    // both ends.
+    let start = highlight.saturating_sub(inner_rows / 2);
+    let start = start.min(total.saturating_sub(inner_rows).max(0));
+
+    let items: Vec<ListItem> = LIBRARY
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_rows)
+        .map(|(i, entry)| {
+            let selected = i == highlight;
+            let marker = if selected { "▶ " } else { "  " };
+            let marker_style = if selected {
+                Style::default()
+                    .fg(theme::accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                dim
+            };
+            let name_style = if selected {
+                Style::default()
+                    .fg(theme::accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            // Line shape: "▶ name   — short description"
+            let name = truncate(entry.name, 32);
+            let rest = format!(
+                " {:<32}  — {}",
+                name,
+                truncate(entry.description, 80),
+            );
+            ListItem::new(Line::from(vec![
+                Span::styled(marker.to_string(), marker_style),
+                Span::styled(rest, name_style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    frame.render_widget(list, area);
 }
 
 fn render_confirm_delete(frame: &mut Frame, area: Rect, name: &str) {
@@ -1250,5 +1381,101 @@ mod tests {
         let _ = r.on_key(alt(KeyCode::Char('d')));
         let _ = r.on_key(press(KeyCode::Char('y')));
         assert!(r.editing.is_none(), "editing should detach after delete");
+    }
+
+    // ── library-mode tests ───────────────────────────────────────────────
+
+    #[test]
+    fn alt_i_enters_library_mode() {
+        let mut r = repl_with(&[]);
+        let _ = r.on_key(alt(KeyCode::Char('i')));
+        assert!(matches!(r.mode, Mode::Library { highlight: 0 }));
+    }
+
+    #[test]
+    fn library_up_down_cycles_highlight_with_wrap() {
+        let mut r = repl_with(&[]);
+        let _ = r.on_key(alt(KeyCode::Char('i')));
+        let _ = r.on_key(press(KeyCode::Down));
+        assert!(matches!(r.mode, Mode::Library { highlight: 1 }));
+        // Jump to end via PageDown / End.
+        let _ = r.on_key(press(KeyCode::End));
+        let last = LIBRARY.len() - 1;
+        assert!(matches!(r.mode, Mode::Library { highlight } if highlight == last));
+        // Wrap forward.
+        let _ = r.on_key(press(KeyCode::Down));
+        assert!(matches!(r.mode, Mode::Library { highlight: 0 }));
+        // Wrap backward.
+        let _ = r.on_key(press(KeyCode::Up));
+        assert!(matches!(r.mode, Mode::Library { highlight } if highlight == last));
+    }
+
+    #[test]
+    fn library_enter_loads_into_editor_with_suggested_name() {
+        let mut r = repl_with(&[]);
+        let _ = r.on_key(alt(KeyCode::Char('i'))); // enter library
+        // Highlight the second entry so the test isn't sensitive to
+        // whatever LIBRARY[0] happens to be.
+        let _ = r.on_key(press(KeyCode::Down));
+        let expected_name = LIBRARY[1].name;
+        let _ = r.on_key(press(KeyCode::Enter));
+
+        assert!(matches!(r.mode, Mode::Editing));
+        assert!(r.editing.is_none(), "library load must NOT mark as editing");
+        assert_eq!(r.suggested_save_name.as_deref(), Some(expected_name));
+        // Editor now contains the entry's SQL with {{package}} substituted.
+        let body = r.editor_text();
+        assert!(!body.is_empty());
+        assert!(
+            !body.contains("{{package}}"),
+            "placeholder must be substituted"
+        );
+    }
+
+    #[test]
+    fn library_esc_cancels_without_touching_editor() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SELECT 42");
+        let _ = r.on_key(alt(KeyCode::Char('i')));
+        let _ = r.on_key(press(KeyCode::Esc));
+        assert!(matches!(r.mode, Mode::Editing));
+        assert_eq!(r.editor_text(), "SELECT 42");
+        assert!(r.suggested_save_name.is_none());
+    }
+
+    #[test]
+    fn library_load_then_save_prefills_save_as_buffer() {
+        let mut r = repl_with(&[]);
+        let _ = r.on_key(alt(KeyCode::Char('i'))); // enter library
+        let _ = r.on_key(press(KeyCode::Enter)); // load LIBRARY[0]
+        let expected_name = LIBRARY[0].name;
+        let _ = r.on_key(alt(KeyCode::Char('s'))); // start save
+        match &r.mode {
+            Mode::SaveAs { buffer } => assert_eq!(buffer, expected_name),
+            other => panic!("expected SaveAs mode, got {:?}", other as *const _),
+        }
+    }
+
+    #[test]
+    fn alt_n_after_library_load_clears_suggested_name() {
+        let mut r = repl_with(&[]);
+        let _ = r.on_key(alt(KeyCode::Char('i')));
+        let _ = r.on_key(press(KeyCode::Enter));
+        assert!(r.suggested_save_name.is_some());
+        let _ = r.on_key(alt(KeyCode::Char('n')));
+        assert!(r.suggested_save_name.is_none());
+        assert!(r.is_editor_empty());
+    }
+
+    #[test]
+    fn successful_save_clears_suggested_name() {
+        let mut r = repl_with(&[]);
+        let _ = r.on_key(alt(KeyCode::Char('i'))); // library
+        let _ = r.on_key(press(KeyCode::Enter)); // load
+        assert!(r.suggested_save_name.is_some());
+        let _ = r.on_key(alt(KeyCode::Char('s'))); // SaveAs with pre-filled name
+        let out = r.on_key(press(KeyCode::Enter)); // accept pre-filled
+        assert!(matches!(out, KeyOutcome::SavedMetricsChanged));
+        assert!(r.suggested_save_name.is_none());
     }
 }

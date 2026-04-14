@@ -182,6 +182,17 @@ stacked panes: saved-metrics list (top) → result (middle) → editor
 by `package_name` and auto-run on every Summary refresh to populate the
 Summary tab's "Custom metrics" section.
 
+**Out-of-box query library** lives in `tui/screens/analysis/library.rs`
+as a compile-time `const LIBRARY: &[LibraryEntry]`. Curated set of
+~9 queries (Perfetto getting-started examples plus app-specific
+analyses). Triggered by `Alt+I` ("insert from library") which opens
+a picker in the editor pane. `Enter` substitutes `{{package}}` for
+the session's package name and drops the SQL into the editor with
+`editing = None` (it's a template); `suggested_save_name` is set to
+the entry's name so the next `Alt+S` pre-fills the SaveAs prompt.
+Adding entries is a code change — keep them validated against the
+pinned `trace_processor_shell` version's stdlib modules.
+
 `ReplState` owns its own `Database` handle. Mutating actions (save,
 rename, delete) write to the DB directly and emit
 `KeyOutcome::SavedMetricsChanged`; the parent screen responds by
@@ -193,6 +204,7 @@ worker via `KeyOutcome::Submit(sql)`.
 - `Alt+Enter` run editor · `Alt+S` save/update · `Alt+N` new
 - `Alt+L` load highlighted · `Alt+R` rename · `Alt+D` delete (with
   `[y]`/`[n]` confirm)
+- `Alt+I` open the library picker
 - `Alt+Up`/`Alt+Down` cycle the saved-metric highlight
 
 Plain Enter always inserts a newline in the editor (ratatui_textarea
