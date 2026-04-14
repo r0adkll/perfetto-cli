@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Saving a session config in the editor now returns to the session detail screen instead of the session list
+- Capture screen timer no longer overshoots the configured duration during the trace-pull/flush phase — the status strip caps `elapsed` at `target`, while the completion log line still reports the full wall-clock time
 
 ## [0.4.1] - 2026-04-13
 
