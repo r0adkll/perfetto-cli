@@ -41,7 +41,6 @@ pub enum SummaryKey {
     /// computed via window functions SQL-side to avoid shipping every
     /// sample across the HTTP wire.
     FrameDurPercentiles,
-    PeakRssBytes,
     MainThreadRunningNs,
     MainThreadTotalNs,
     // ── startup card (multi-row, 0 or 1 rows expected) ──
@@ -104,11 +103,6 @@ impl SummaryKey {
                 key: SummaryKey::FrameDurPercentiles,
                 sql: frame_percentiles_sql(&ctx.package_name),
                 multi_row: true,
-            },
-            SummaryQuery {
-                key: SummaryKey::PeakRssBytes,
-                sql: peak_rss_sql(&ctx.package_name),
-                multi_row: false,
             },
             SummaryQuery {
                 key: SummaryKey::MainThreadRunningNs,
@@ -200,24 +194,6 @@ fn main_thread_hotspots_sql(package: &str) -> String {
     )
 }
 
-/// Peak `mem.rss` counter value for the target process. Returns `Null` for
-/// traces without memory counters or without a matching process.
-///
-/// `mem.rss` is Android Perfetto's standard process-scoped counter for
-/// total resident set size in bytes. If the capture didn't include memory
-/// probes, `process_counter_track` has no `mem.rss` row for this process
-/// and `MAX` returns `NULL`, which displays as `—`.
-fn peak_rss_sql(package: &str) -> String {
-    let pkg = escape_sql_literal(package);
-    format!(
-        "SELECT MAX(c.value) AS peak \
-         FROM counter c \
-         JOIN process_counter_track t ON c.track_id = t.id \
-         JOIN process p ON t.upid = p.upid \
-         WHERE t.name = 'mem.rss' AND p.name = '{pkg}'"
-    )
-}
-
 /// Sum of `thread_state.dur` for the target app's main thread. Pass
 /// `Some("Running")` to restrict to on-CPU time; pass `None` for total
 /// observed time. The ratio of the two is our Main-thread busy %.
@@ -301,8 +277,8 @@ fn frame_percentiles_sql(package: &str) -> String {
 /// Bucket `mem.rss` samples into 60 time buckets across the trace for a
 /// sparkline-friendly series. Each bucket reports the peak RSS in that
 /// slice of time — captures short allocation spikes without losing them
-/// to averaging. Scoped to the target package via the same join used by
-/// [`peak_rss_sql`].
+/// to averaging. Scoped to the target package via the usual
+/// `counter → process_counter_track → process` join.
 fn rss_over_time_sql(package: &str) -> String {
     let pkg = escape_sql_literal(package);
     format!(
@@ -529,20 +505,21 @@ impl SummaryState {
     }
 
     fn render_health_tiles(&self, frame: &mut Frame, area: Rect) {
+        // Three equal-width tiles. Peak RSS used to live here but the
+        // memory section's header already surfaces the peak inline, so
+        // the dedicated tile was duplicative.
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
             ])
             .split(area);
 
         self.render_jank_rate_tile(frame, cols[0]);
         self.render_frame_percentile_tile(frame, cols[1]);
-        self.render_peak_rss_tile(frame, cols[2]);
-        self.render_main_busy_tile(frame, cols[3]);
+        self.render_main_busy_tile(frame, cols[2]);
     }
 
     fn render_jank_rate_tile(&self, frame: &mut Frame, area: Rect) {
@@ -569,39 +546,6 @@ impl SummaryState {
                 Style::default().fg(theme::dim()),
             ));
         let para = Paragraph::new(Line::from(Span::styled(text, value_style)))
-            .block(block)
-            .alignment(Alignment::Center);
-        frame.render_widget(para, area);
-    }
-
-    fn render_peak_rss_tile(&self, frame: &mut Frame, area: Rect) {
-        // Perfetto's `mem.rss` counter is stored as a double — `MAX(value)`
-        // preserves that type, so we have to accept both `Cell::Float`
-        // and `Cell::Int` here. Earlier versions only matched `Int`
-        // which made this tile always render `—` on real traces.
-        let text = match self.cells.get(&SummaryKey::PeakRssBytes) {
-            Some(CellState::Ready(Cell::Int(bytes))) if *bytes > 0 => format_bytes(*bytes as u64),
-            Some(CellState::Ready(Cell::Float(bytes))) if *bytes > 0.0 => {
-                format_bytes(*bytes as u64)
-            }
-            Some(CellState::Ready(_)) => "—".into(),
-            Some(CellState::Pending) => "…".into(),
-            _ => "—".into(),
-        };
-        let style = if text == "…" || text == "—" {
-            Style::default().fg(theme::dim())
-        } else {
-            Style::default()
-                .fg(theme::accent())
-                .add_modifier(Modifier::BOLD)
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                " Peak RSS ",
-                Style::default().fg(theme::dim()),
-            ));
-        let para = Paragraph::new(Line::from(Span::styled(text, style)))
             .block(block)
             .alignment(Alignment::Center);
         frame.render_widget(para, area);
@@ -1307,7 +1251,6 @@ mod tests {
                 | SummaryKey::JankFrameCount
                 | SummaryKey::TotalFrameCount
                 | SummaryKey::FrameDurPercentiles
-                | SummaryKey::PeakRssBytes
                 | SummaryKey::MainThreadRunningNs
                 | SummaryKey::MainThreadTotalNs
                 | SummaryKey::StartupInfo
@@ -1606,14 +1549,11 @@ mod tests {
     }
 
     #[test]
-    fn peak_rss_and_thread_state_queries_embed_package() {
+    fn thread_state_queries_embed_package() {
         let ctx = SummaryContext {
             package_name: "com.foo.bar".into(),
         };
         let qs = SummaryKey::all_queries(&ctx);
-        let rss = qs.iter().find(|q| q.key == SummaryKey::PeakRssBytes).unwrap();
-        assert!(rss.sql.contains("'com.foo.bar'"));
-        assert!(rss.sql.contains("mem.rss"));
 
         let running = qs
             .iter()
