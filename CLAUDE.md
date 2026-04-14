@@ -41,8 +41,7 @@ src/
 │   ├── event.rs      # AppEvent enum + EventBus (key + tick + async results)
 │   ├── theme.rs      # color palette constants
 │   └── screens/      # one file per screen, each owns its own state
-│       ├── analysis/ # AnalysisScreen: Summary + SQL REPL tabs over trace_processor
-│       └── diff/     # DiffScreen: two-trace side-by-side comparison (reuses analysis worker)
+│       └── analysis/ # AnalysisScreen: Summary + SQL REPL tabs over trace_processor
 ├── trace_processor/  # PerfettoSQL analysis client (see "Local trace analysis")
 │   ├── binary.rs     # pinned-version downloader + SHA-256 verify
 │   ├── client.rs     # TraceProcessor: spawn, /parse, /query, shutdown
@@ -168,23 +167,56 @@ so an in-flight load bails immediately.
 
 **`spawn_worker` is event-routing-agnostic via a `wrap: F` closure.** The
 worker emits `AnalysisEvent`s but doesn't know which `AppEvent` variant
-carries them. The Analysis screen passes `|ev| AppEvent::Analysis(ev)`;
-the Diff screen passes `|ev| AppEvent::Diff { side, event: ev }` via
-`diff::worker::spawn_diff_worker`. Any new screen that wants a
-trace_processor pipeline should wrap `spawn_worker` the same way —
-don't fork the worker itself. The DiffScreen reuses `SummaryState`
-unchanged, one per side, driven by the same `on_cell` / `on_rows` path
-as Analysis.
+carries them. The Analysis screen passes `|ev| AppEvent::Analysis(ev)`.
+Any new screen that wants a trace_processor pipeline should wrap
+`spawn_worker` the same way — don't fork the worker itself.
 
 Summary queries are runtime-tolerant: the worker catches "no such table /
 module" errors and downgrades that tile to `MissingTable` (rendered as
 `—`) instead of poisoning the whole panel. This is how jank/startup
 metrics gracefully no-op on older Android traces.
 
-REPL input is a `ratatui_textarea::TextArea` (multi-line — queries often
-are). **Submit is `Ctrl+Enter` or `Alt+Enter`** — both wired to the same
-path because terminal modifier reporting varies; plain Enter inserts a
-newline. `Ctrl+U` and `Esc` clear the input.
+**REPL tab is a metric-authoring surface**, not an SQL playground. Three
+stacked panes: saved-metrics list (top) → result (middle) → editor
+(bottom). Saved metrics persist in the `saved_queries` DB table scoped
+by `package_name` and auto-run on every Summary refresh to populate the
+Summary tab's "Custom metrics" section.
+
+**Out-of-box query library** lives in `tui/screens/analysis/library.rs`
+as a compile-time `const LIBRARY: &[LibraryEntry]`. Curated set of
+~9 queries (Perfetto getting-started examples plus app-specific
+analyses). Triggered by `Alt+I` ("insert from library") which opens
+a picker in the editor pane. `Enter` substitutes `{{package}}` for
+the session's package name and drops the SQL into the editor with
+`editing = None` (it's a template); `suggested_save_name` is set to
+the entry's name so the next `Alt+S` pre-fills the SaveAs prompt.
+Adding entries is a code change — keep them validated against the
+pinned `trace_processor_shell` version's stdlib modules.
+
+`ReplState` owns its own `Database` handle. Mutating actions (save,
+rename, delete) write to the DB directly and emit
+`KeyOutcome::SavedMetricsChanged`; the parent screen responds by
+reloading the Summary snapshot and re-dispatching `RunSummary`. The
+REPL stays DB-free for query execution — that still goes through the
+worker via `KeyOutcome::Submit(sql)`.
+
+**Every action is an `Alt+<chord>`**, never a colon-command:
+- `Alt+Enter` run editor · `Alt+S` save/update · `Alt+N` new
+- `Alt+L` load highlighted · `Alt+R` rename · `Alt+D` delete (with
+  `[y]`/`[n]` confirm)
+- `Alt+I` open the library picker
+- `Alt+Up`/`Alt+Down` cycle the saved-metric highlight
+
+Plain Enter always inserts a newline in the editor (ratatui_textarea
+default). `Ctrl+U` and `Esc` clear the editor. Modal sub-states
+(`Mode::{SaveAs, Rename, ConfirmDelete}`) replace the editor pane with
+an inline prompt and mirror `session_detail::Mode::Rename`'s
+text_input::apply flow. An `editing: Some(name)` field tracks which
+saved metric the editor content maps to; a `*` dirty marker appears in
+the editor title whenever editor bytes diverge from the saved SQL.
+Ctrl+Enter also submits on the small subset of terminals that forward
+the modifier (kitty keyboard protocol / CSI u); Alt+Enter is the
+universally-working path and the documented chord.
 
 **Quick-keys are disabled when a text input has focus.** On the Analysis
 screen's REPL tab (`text_focused = Ready + Tab::Repl`), the single-char
@@ -196,12 +228,9 @@ uncommon. Any future screen that adds a text input should follow this
 pattern rather than fighting with single-char shortcuts — see
 `AnalysisScreen::on_key` for the template.
 
-History navigation: Up/Down cycle history only when the input is empty OR
-the user is already mid-recall (`recall_idx.is_some()`). Any keystroke
-other than the recall arrows clears the recall marker, after which
-Up/Down feed the textarea for cursor movement. Matches shell convention:
-Up-Up-Up cycles back, but once you type, arrows navigate the buffer.
-Result table scrolls on Shift+Up/Down and PageUp/PageDown.
+Result table scrolls on Shift+Up/Down and PageUp/PageDown. There is no
+Up/Down history recall — saved metrics replaced that flow (persistent
+named recall strictly beats ephemeral arrow-key cycling).
 
 ### Local trace analysis (PerfettoSQL)
 

@@ -26,13 +26,24 @@ use super::summary::{SummaryContext, SummaryKey, SummaryQuery};
 
 /// Commands the analysis screen sends to its worker.
 pub enum WorkerRequest {
-    /// Fire every summary query; worker emits one [`AnalysisEvent::SummaryCell`]
-    /// (or `SummaryRows` for multi-row queries) per key.
-    RunSummary,
+    /// Fire every canned summary query and every user-saved custom query.
+    /// The worker emits one [`AnalysisEvent::SummaryCell`] /
+    /// [`AnalysisEvent::SummaryRows`] per canned key, and one
+    /// [`AnalysisEvent::CustomResult`] per custom query.
+    RunSummary { custom_queries: Vec<CustomQuery> },
     /// REPL submission. `id` lets the screen pair results to their original
     /// SQL when multiple queries are in flight (we only allow one at a time
     /// today but the id keeps the protocol future-proof).
     RunQuery { id: u64, sql: String },
+}
+
+/// A user-saved PerfettoSQL query fed to the worker alongside the canned
+/// summary queries. Read from the DB by the screen each time a
+/// `RunSummary` is dispatched; the worker itself stays DB-free.
+#[derive(Debug, Clone)]
+pub struct CustomQuery {
+    pub name: String,
+    pub sql: String,
 }
 
 /// Events emitted by the worker back to the app event bus.
@@ -56,6 +67,13 @@ pub enum AnalysisEvent {
     QueryResult {
         id: u64,
         sql: String,
+        result: Result<QueryResult, String>,
+    },
+    /// One user-saved query completed as part of a Summary refresh. No
+    /// soft-fail downgrade — the user wrote the SQL, so raw error text
+    /// is more useful feedback than a `—`.
+    CustomResult {
+        name: String,
         result: Result<QueryResult, String>,
     },
 }
@@ -146,10 +164,22 @@ where
                 break;
             }
             match req {
-                WorkerRequest::RunSummary => {
+                WorkerRequest::RunSummary { custom_queries } => {
                     for sq in SummaryKey::all_queries(&summary_ctx) {
                         let ev = run_summary_item(&tp, sq).await;
                         if app_tx.send(wrap(ev)).is_err() {
+                            break;
+                        }
+                    }
+                    for cq in custom_queries {
+                        let result = tp.query(&cq.sql).await.map_err(|e| format!("{e:#}"));
+                        if app_tx
+                            .send(wrap(AnalysisEvent::CustomResult {
+                                name: cq.name,
+                                result,
+                            }))
+                            .is_err()
+                        {
                             break;
                         }
                     }

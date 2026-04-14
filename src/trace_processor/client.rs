@@ -389,7 +389,9 @@ mod smoke {
         use crate::tui::screens::analysis::summary::{SummaryContext, SummaryKey};
         let package_name =
             std::env::var("PERFETTO_SMOKE_PACKAGE").unwrap_or_else(|_| "com.example.nope".into());
-        let ctx = SummaryContext { package_name };
+        let ctx = SummaryContext {
+            package_name: package_name.clone(),
+        };
         for sq in SummaryKey::all_queries(&ctx) {
             let res = tp.query(&sq.sql).await;
             match res {
@@ -411,6 +413,26 @@ mod smoke {
                         sq.key
                     );
                 }
+            }
+        }
+
+        // Bonus: validate that every library query the REPL surfaces at
+        // `Alt+I` parses and runs cleanly against this trace. We accept
+        // empty results (trace may lack the underlying data source) and
+        // raw errors (e.g. missing stdlib module on older traces) —
+        // only a hard panic would be a regression.
+        use crate::tui::screens::analysis::library::{LIBRARY, render_sql};
+        println!("\n--- library queries against this trace ---");
+        for entry in LIBRARY {
+            let sql = render_sql(entry, &package_name);
+            match tp.query(&sql).await {
+                Ok(qr) => println!(
+                    "library {}: ok, {} rows, {} cols",
+                    entry.name,
+                    qr.rows.len(),
+                    qr.columns.len()
+                ),
+                Err(e) => println!("library {}: err: {e:#}", entry.name),
             }
         }
 

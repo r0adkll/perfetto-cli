@@ -65,5 +65,18 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
+-- Per-app custom PerfettoSQL queries saved from the Analysis SQL REPL.
+-- Scoped by `package_name` so users get an app-specific dashboard that
+-- persists across sessions targeting the same app.
+CREATE TABLE IF NOT EXISTS saved_queries (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_name  TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    sql           TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    UNIQUE(package_name, name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
+CREATE INDEX IF NOT EXISTS idx_saved_queries_package ON saved_queries(package_name);

@@ -21,7 +21,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row as TableRow, Sparkline, Table, Wrap};
 
-use crate::trace_processor::{Cell, Row};
+use crate::trace_processor::{Cell, QueryResult, Row};
 use crate::tui::theme;
 
 use super::worker::{SummaryCellOutcome, SummaryRowsOutcome};
@@ -41,7 +41,6 @@ pub enum SummaryKey {
     /// computed via window functions SQL-side to avoid shipping every
     /// sample across the HTTP wire.
     FrameDurPercentiles,
-    PeakRssBytes,
     MainThreadRunningNs,
     MainThreadTotalNs,
     // ── startup card (multi-row, 0 or 1 rows expected) ──
@@ -104,11 +103,6 @@ impl SummaryKey {
                 key: SummaryKey::FrameDurPercentiles,
                 sql: frame_percentiles_sql(&ctx.package_name),
                 multi_row: true,
-            },
-            SummaryQuery {
-                key: SummaryKey::PeakRssBytes,
-                sql: peak_rss_sql(&ctx.package_name),
-                multi_row: false,
             },
             SummaryQuery {
                 key: SummaryKey::MainThreadRunningNs,
@@ -200,24 +194,6 @@ fn main_thread_hotspots_sql(package: &str) -> String {
     )
 }
 
-/// Peak `mem.rss` counter value for the target process. Returns `Null` for
-/// traces without memory counters or without a matching process.
-///
-/// `mem.rss` is Android Perfetto's standard process-scoped counter for
-/// total resident set size in bytes. If the capture didn't include memory
-/// probes, `process_counter_track` has no `mem.rss` row for this process
-/// and `MAX` returns `NULL`, which displays as `—`.
-fn peak_rss_sql(package: &str) -> String {
-    let pkg = escape_sql_literal(package);
-    format!(
-        "SELECT MAX(c.value) AS peak \
-         FROM counter c \
-         JOIN process_counter_track t ON c.track_id = t.id \
-         JOIN process p ON t.upid = p.upid \
-         WHERE t.name = 'mem.rss' AND p.name = '{pkg}'"
-    )
-}
-
 /// Sum of `thread_state.dur` for the target app's main thread. Pass
 /// `Some("Running")` to restrict to on-CPU time; pass `None` for total
 /// observed time. The ratio of the two is our Main-thread busy %.
@@ -301,8 +277,8 @@ fn frame_percentiles_sql(package: &str) -> String {
 /// Bucket `mem.rss` samples into 60 time buckets across the trace for a
 /// sparkline-friendly series. Each bucket reports the peak RSS in that
 /// slice of time — captures short allocation spikes without losing them
-/// to averaging. Scoped to the target package via the same join used by
-/// [`peak_rss_sql`].
+/// to averaging. Scoped to the target package via the usual
+/// `counter → process_counter_track → process` join.
 fn rss_over_time_sql(package: &str) -> String {
     let pkg = escape_sql_literal(package);
     format!(
@@ -339,10 +315,40 @@ pub struct SummaryState {
     cells: HashMap<SummaryKey, CellState>,
     package_name: String,
     captured_at: String,
+    custom: CustomMetricsState,
+    /// When true, custom-metric tables collapse to a single-line
+    /// "N rows" tile. Toggled by `c` on the Summary tab so a dense
+    /// dashboard can shrink to a scannable overview on demand.
+    compact_custom: bool,
+}
+
+/// Per-app saved queries plus their most recent result state. Mirrors the
+/// canned-metric `CellState`/`cells` pattern but keyed by user-provided
+/// names instead of an enum.
+#[derive(Debug, Default)]
+pub struct CustomMetricsState {
+    /// Ordered list of queries to dispatch on each `RunSummary`. Source
+    /// of truth is the DB; this is a per-run snapshot taken by the
+    /// screen and handed in at construction / reset.
+    queries: Vec<super::worker::CustomQuery>,
+    /// Most recent result per query name. Pending until the first
+    /// `CustomResult` event for a given name arrives.
+    results: HashMap<String, CustomResultState>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CustomResultState {
+    Pending,
+    Done(QueryResult),
+    Error(String),
 }
 
 impl SummaryState {
-    pub fn new(package_name: String, captured_at: String) -> Self {
+    pub fn new(
+        package_name: String,
+        captured_at: String,
+        custom_queries: Vec<super::worker::CustomQuery>,
+    ) -> Self {
         let ctx = SummaryContext {
             package_name: package_name.clone(),
         };
@@ -350,37 +356,50 @@ impl SummaryState {
         for sq in SummaryKey::all_queries(&ctx) {
             cells.insert(sq.key, CellState::Pending);
         }
+        let custom = CustomMetricsState::new(custom_queries);
         Self {
             cells,
             package_name,
             captured_at,
+            custom,
+            compact_custom: false,
         }
     }
 
-    /// Reset every cell back to Pending so the worker's next `RunSummary`
-    /// repopulates it.
-    pub fn reset(&mut self) {
+    /// Flip between expanded (tables show up to 4 rows) and compact
+    /// (tables collapse to a 1-line tile). Preserves all cached results.
+    pub fn toggle_compact_custom(&mut self) {
+        self.compact_custom = !self.compact_custom;
+    }
+
+    pub fn compact_custom(&self) -> bool {
+        self.compact_custom
+    }
+
+    /// Reset every canned cell back to Pending and replace the custom-query
+    /// list with a fresh snapshot from the caller. The custom snapshot is
+    /// passed in (not re-fetched) so the screen controls when DB reads
+    /// happen — keeps this struct DB-free.
+    pub fn reset(&mut self, custom_queries: Vec<super::worker::CustomQuery>) {
         let ctx = SummaryContext {
             package_name: self.package_name.clone(),
         };
         for sq in SummaryKey::all_queries(&ctx) {
             self.cells.insert(sq.key, CellState::Pending);
         }
+        self.custom = CustomMetricsState::new(custom_queries);
     }
 
-    /// Read-only access to the most recent state for a given metric.
-    /// Used by the diff screen to compare two `SummaryState`s cell-by-cell.
-    pub(crate) fn cell(&self, key: SummaryKey) -> Option<&CellState> {
-        self.cells.get(&key)
+    pub fn on_custom_result(&mut self, name: String, result: Result<QueryResult, String>) {
+        self.custom.on_result(name, result);
     }
 
-    #[allow(dead_code)] // used by future diff expansions (pkg-awareness)
-    pub(crate) fn package_name(&self) -> &str {
-        &self.package_name
-    }
-
-    pub(crate) fn captured_at(&self) -> &str {
-        &self.captured_at
+    /// Replace only the custom-queries snapshot (leaves canned cells
+    /// untouched). Used when a `:save` adds a new query mid-session and
+    /// we want to re-render the custom section without re-running the
+    /// canned pipeline.
+    pub fn reset_custom(&mut self, custom_queries: Vec<super::worker::CustomQuery>) {
+        self.custom = CustomMetricsState::new(custom_queries);
     }
 
     pub fn on_cell(&mut self, key: SummaryKey, outcome: SummaryCellOutcome) {
@@ -402,11 +421,11 @@ impl SummaryState {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        // Startup card and Memory section are conditional: traces without
-        // `android.startup` data or without memory counters entirely skip
-        // their sections instead of rendering stubs. This keeps narrow
-        // terminals from losing vertical space to a fixed "—" card on
-        // captures that don't have the relevant data sources enabled.
+        // Startup card, Memory section, and Custom metrics section are all
+        // conditional: captures without the underlying data / queries
+        // collapse those regions entirely instead of rendering stubs.
+        // This keeps narrow terminals from losing vertical space to
+        // empty panels.
         let show_startup = matches!(
             self.cells.get(&SummaryKey::StartupInfo),
             Some(CellState::Rows(rows)) if !rows.is_empty()
@@ -415,6 +434,23 @@ impl SummaryState {
             self.cells.get(&SummaryKey::RssOverTime),
             Some(CellState::Rows(rows)) if !rows.is_empty()
         );
+        // Budget for the Custom metrics section: claim everything left
+        // after the always-present regions (context + health + ribbon +
+        // min hotspots) and any conditional sections. Hotspots is a
+        // `Min(3)` so it still gets its minimum even when custom fills
+        // the rest. `c` toggles a compact mode that collapses tables to
+        // one-line tiles for a high-density overview.
+        let mut reserved: u16 = 3 /* context */ + 3 /* health */ + 3 /* ribbon */ + 3 /* min hotspots */;
+        if show_startup {
+            reserved = reserved.saturating_add(3);
+        }
+        if show_memory {
+            reserved = reserved.saturating_add(5);
+        }
+        let custom_max = area.height.saturating_sub(reserved);
+        let custom_height = self
+            .custom
+            .rendered_height_with(custom_max, self.compact_custom);
 
         let mut constraints = vec![
             Constraint::Length(3), // context strip
@@ -427,6 +463,9 @@ impl SummaryState {
             constraints.push(Constraint::Length(5)); // memory section (label + sparkline)
         }
         constraints.push(Constraint::Min(3)); // main-thread hotspots
+        if custom_height > 0 {
+            constraints.push(Constraint::Length(custom_height));
+        }
         constraints.push(Constraint::Length(3)); // trace contents ribbon
 
         let chunks = Layout::default()
@@ -448,6 +487,10 @@ impl SummaryState {
         }
         self.render_main_thread_hotspots(frame, chunks[idx]);
         idx += 1;
+        if custom_height > 0 {
+            self.custom.render(frame, chunks[idx], self.compact_custom);
+            idx += 1;
+        }
         self.render_trace_contents_ribbon(frame, chunks[idx]);
     }
 
@@ -493,20 +536,21 @@ impl SummaryState {
     }
 
     fn render_health_tiles(&self, frame: &mut Frame, area: Rect) {
+        // Three equal-width tiles. Peak RSS used to live here but the
+        // memory section's header already surfaces the peak inline, so
+        // the dedicated tile was duplicative.
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
             ])
             .split(area);
 
         self.render_jank_rate_tile(frame, cols[0]);
         self.render_frame_percentile_tile(frame, cols[1]);
-        self.render_peak_rss_tile(frame, cols[2]);
-        self.render_main_busy_tile(frame, cols[3]);
+        self.render_main_busy_tile(frame, cols[2]);
     }
 
     fn render_jank_rate_tile(&self, frame: &mut Frame, area: Rect) {
@@ -533,32 +577,6 @@ impl SummaryState {
                 Style::default().fg(theme::dim()),
             ));
         let para = Paragraph::new(Line::from(Span::styled(text, value_style)))
-            .block(block)
-            .alignment(Alignment::Center);
-        frame.render_widget(para, area);
-    }
-
-    fn render_peak_rss_tile(&self, frame: &mut Frame, area: Rect) {
-        let text = match self.cells.get(&SummaryKey::PeakRssBytes) {
-            Some(CellState::Ready(Cell::Int(bytes))) if *bytes > 0 => format_bytes(*bytes as u64),
-            Some(CellState::Ready(_)) => "—".into(),
-            Some(CellState::Pending) => "…".into(),
-            _ => "—".into(),
-        };
-        let style = if text == "…" || text == "—" {
-            Style::default().fg(theme::dim())
-        } else {
-            Style::default()
-                .fg(theme::accent())
-                .add_modifier(Modifier::BOLD)
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                " Peak RSS ",
-                Style::default().fg(theme::dim()),
-            ));
-        let para = Paragraph::new(Line::from(Span::styled(text, style)))
             .block(block)
             .alignment(Alignment::Center);
         frame.render_widget(para, area);
@@ -777,6 +795,394 @@ impl SummaryState {
             .block(block)
             .alignment(Alignment::Center);
         frame.render_widget(para, area);
+    }
+}
+
+/// Number of body rows we show in a single custom-metric table card
+/// before truncating. Beyond this, a footer line points at the REPL.
+const CUSTOM_TABLE_VISIBLE_ROWS: usize = 4;
+
+/// How many tile-shaped (1×1) custom-metric cards we pack into one
+/// horizontal row. Three matches the canned health-tile grid (~33%
+/// each), gives single-value KPIs comfortable breathing room.
+const CUSTOM_TILES_PER_ROW: usize = 3;
+
+/// Vertical size of one tile / status card (border + value + border).
+const CUSTOM_TILE_HEIGHT: u16 = 3;
+
+/// Cell-display truncation in custom-metric tables — matches the
+/// existing main-thread hotspots cap.
+const CUSTOM_CELL_MAX_CHARS: usize = 40;
+
+/// Per-shape card classification. Computed at render time from the
+/// live `QueryResult`, not stored — the same query can change shape
+/// across traces (a result with 1 row on one capture might be 5 rows
+/// on another).
+#[derive(Debug)]
+enum CardShape<'a> {
+    /// 1×1 result — render as a small tile, like the canned health
+    /// tiles.
+    Tile { value: String },
+    /// Multi-row tabular result — render as an inline Table card.
+    /// `total_rows` lets the renderer decide whether to show an
+    /// overflow footer.
+    Table { qr: &'a QueryResult, total_rows: usize },
+    /// Empty result — render as a tile of `—`. Same height as a Tile,
+    /// keeps the section tidy.
+    Empty,
+    /// Worker result hasn't arrived yet — render as a `…` tile.
+    Pending,
+    /// Worker returned an error (typically: query references a missing
+    /// table). Render as a red status card.
+    Error(&'a str),
+}
+
+impl<'a> CardShape<'a> {
+    /// Vertical row count this card occupies when rendered.
+    fn height(&self) -> u16 {
+        match self {
+            CardShape::Tile { .. } | CardShape::Empty | CardShape::Pending | CardShape::Error(_) => {
+                CUSTOM_TILE_HEIGHT
+            }
+            CardShape::Table { total_rows, .. } => {
+                let visible = (*total_rows).min(CUSTOM_TABLE_VISIBLE_ROWS) as u16;
+                let overflow = if *total_rows > CUSTOM_TABLE_VISIBLE_ROWS { 1 } else { 0 };
+                // borders (2) + header (1) + visible rows + optional overflow line
+                3 + visible + overflow
+            }
+        }
+    }
+
+    fn is_tile_like(&self) -> bool {
+        !matches!(self, CardShape::Table { .. })
+    }
+}
+
+impl CustomMetricsState {
+    fn new(queries: Vec<super::worker::CustomQuery>) -> Self {
+        let mut results = HashMap::with_capacity(queries.len());
+        for q in &queries {
+            results.insert(q.name.clone(), CustomResultState::Pending);
+        }
+        Self { queries, results }
+    }
+
+    fn on_result(&mut self, name: String, result: Result<QueryResult, String>) {
+        let state = match result {
+            Ok(qr) => CustomResultState::Done(qr),
+            Err(e) => CustomResultState::Error(e),
+        };
+        self.results.insert(name, state);
+    }
+
+    #[cfg(test)]
+    fn shape_for(state: Option<&CustomResultState>) -> CardShape<'_> {
+        Self::shape_for_with(state, false)
+    }
+
+    /// Classify a single result into a `CardShape`. When `compact` is
+    /// true, multi-row `Table` shapes collapse to a `Tile` displaying
+    /// the row count — tiles, empty, pending, and error shapes are
+    /// unaffected (they're already single-line friendly).
+    fn shape_for_with(state: Option<&CustomResultState>, compact: bool) -> CardShape<'_> {
+        match state {
+            None | Some(CustomResultState::Pending) => CardShape::Pending,
+            Some(CustomResultState::Error(msg)) => CardShape::Error(msg),
+            Some(CustomResultState::Done(qr)) => {
+                if qr.rows.is_empty() {
+                    CardShape::Empty
+                } else if qr.rows.len() == 1 && qr.columns.len() == 1 {
+                    let value = qr
+                        .rows
+                        .first()
+                        .and_then(|r| r.cells().first())
+                        .map(cell_display)
+                        .unwrap_or_else(|| "—".into());
+                    CardShape::Tile { value }
+                } else if compact {
+                    let n = qr.rows.len();
+                    let value = if n == 1 {
+                        "1 row".into()
+                    } else {
+                        format!("{n} rows")
+                    };
+                    CardShape::Tile { value }
+                } else {
+                    CardShape::Table {
+                        qr,
+                        total_rows: qr.rows.len(),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Walk cards in render order, accumulating heights. Tiles pack
+    /// `CUSTOM_TILES_PER_ROW` per row (one row = `CUSTOM_TILE_HEIGHT`
+    /// regardless of how many tiles are in it). Tables take a full
+    /// row each. Returns 0 when the section is empty so the parent
+    /// collapses the constraint. Caps at `max_height` — anything
+    /// beyond becomes the overflow indicator.
+    #[cfg(test)]
+    fn rendered_height(&self, max_height: u16) -> u16 {
+        self.rendered_height_with(max_height, false)
+    }
+
+    fn rendered_height_with(&self, max_height: u16, compact: bool) -> u16 {
+        if self.queries.is_empty() {
+            return 0;
+        }
+        let cards = self.classify_with(compact);
+        let mut h: u16 = 0;
+        let mut tile_in_progress = 0u16; // tiles staged for the current row
+        for (_, shape) in &cards {
+            if shape.is_tile_like() {
+                tile_in_progress += 1;
+                if tile_in_progress as usize >= CUSTOM_TILES_PER_ROW {
+                    h = h.saturating_add(CUSTOM_TILE_HEIGHT);
+                    tile_in_progress = 0;
+                }
+            } else {
+                if tile_in_progress > 0 {
+                    h = h.saturating_add(CUSTOM_TILE_HEIGHT);
+                    tile_in_progress = 0;
+                }
+                h = h.saturating_add(shape.height());
+            }
+        }
+        if tile_in_progress > 0 {
+            h = h.saturating_add(CUSTOM_TILE_HEIGHT);
+        }
+        h.min(max_height)
+    }
+
+    fn classify_with(&self, compact: bool) -> Vec<(&str, CardShape<'_>)> {
+        self.queries
+            .iter()
+            .map(|q| {
+                let state = self.results.get(&q.name);
+                (q.name.as_str(), Self::shape_for_with(state, compact))
+            })
+            .collect()
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, compact: bool) {
+        if self.queries.is_empty() || area.height < CUSTOM_TILE_HEIGHT {
+            return;
+        }
+        let dim = Style::default().fg(theme::dim());
+        let cards = self.classify_with(compact);
+
+        // Pack tiles into rows of CUSTOM_TILES_PER_ROW (preserving the
+        // declaration order across tile/table classes), then track how
+        // much vertical area each rendered chunk needs. We render in
+        // two passes: first compute the chunk list with heights, then
+        // emit until we hit `area.height` and append an overflow line
+        // for whatever didn't fit.
+        let mut chunks: Vec<RenderChunk<'_>> = Vec::new();
+        let mut tile_buf: Vec<(&str, CardShape<'_>)> = Vec::new();
+        for (name, shape) in cards {
+            if shape.is_tile_like() {
+                tile_buf.push((name, shape));
+                if tile_buf.len() >= CUSTOM_TILES_PER_ROW {
+                    chunks.push(RenderChunk::TileRow(std::mem::take(&mut tile_buf)));
+                }
+            } else {
+                if !tile_buf.is_empty() {
+                    chunks.push(RenderChunk::TileRow(std::mem::take(&mut tile_buf)));
+                }
+                chunks.push(RenderChunk::TableCard { name, shape });
+            }
+        }
+        if !tile_buf.is_empty() {
+            chunks.push(RenderChunk::TileRow(tile_buf));
+        }
+
+        let mut used: u16 = 0;
+        let mut rendered_chunks = Vec::new();
+        let mut dropped_cards = 0usize;
+        for chunk in chunks {
+            let h = chunk.height();
+            // Reserve 1 row for an overflow indicator if anything later
+            // has to be skipped.
+            let remaining = area.height.saturating_sub(used);
+            if h > remaining || (h + 1 > remaining && rendered_chunks.iter().any(|_| true) && /* we may need overflow line */ false)
+            {
+                dropped_cards += chunk.card_count();
+                continue;
+            }
+            used = used.saturating_add(h);
+            rendered_chunks.push(chunk);
+        }
+        // Reserve a row for the overflow indicator if needed and if
+        // there's room — otherwise drop the last chunk so it fits.
+        if dropped_cards > 0 {
+            while used >= area.height && !rendered_chunks.is_empty() {
+                let last = rendered_chunks.pop().unwrap();
+                dropped_cards += last.card_count();
+                used = used.saturating_sub(last.height());
+            }
+        }
+
+        // Compute layout constraints from final chunk list.
+        let mut constraints: Vec<Constraint> =
+            rendered_chunks.iter().map(|c| Constraint::Length(c.height())).collect();
+        if dropped_cards > 0 {
+            constraints.push(Constraint::Length(1));
+        }
+        if constraints.is_empty() {
+            return;
+        }
+        let regions = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(area);
+
+        for (i, chunk) in rendered_chunks.iter().enumerate() {
+            chunk.render(frame, regions[i]);
+        }
+        if dropped_cards > 0 {
+            let idx = rendered_chunks.len();
+            let line = Paragraph::new(Line::from(Span::styled(
+                format!(
+                    "+{dropped_cards} metric{plural} not shown — switch to SQL tab to see them",
+                    plural = if dropped_cards == 1 { "" } else { "s" }
+                ),
+                dim,
+            )));
+            frame.render_widget(line, regions[idx]);
+        }
+    }
+}
+
+enum RenderChunk<'a> {
+    /// One horizontal row of up to `CUSTOM_TILES_PER_ROW` tile-like
+    /// cards (Tile / Empty / Pending / Error all qualify).
+    TileRow(Vec<(&'a str, CardShape<'a>)>),
+    /// One full-width table card.
+    TableCard { name: &'a str, shape: CardShape<'a> },
+}
+
+impl<'a> RenderChunk<'a> {
+    fn height(&self) -> u16 {
+        match self {
+            RenderChunk::TileRow(_) => CUSTOM_TILE_HEIGHT,
+            RenderChunk::TableCard { shape, .. } => shape.height(),
+        }
+    }
+
+    fn card_count(&self) -> usize {
+        match self {
+            RenderChunk::TileRow(tiles) => tiles.len(),
+            RenderChunk::TableCard { .. } => 1,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect) {
+        match self {
+            RenderChunk::TileRow(tiles) => {
+                let cols = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(
+                        (0..CUSTOM_TILES_PER_ROW)
+                            .map(|_| Constraint::Percentage(100 / CUSTOM_TILES_PER_ROW as u16))
+                            .collect::<Vec<_>>(),
+                    )
+                    .split(area);
+                for (i, (name, shape)) in tiles.iter().enumerate() {
+                    if i >= cols.len() {
+                        break;
+                    }
+                    render_tile_like(frame, cols[i], name, shape);
+                }
+            }
+            RenderChunk::TableCard { name, shape } => render_table_card(frame, area, name, shape),
+        }
+    }
+}
+
+fn render_tile_like(frame: &mut Frame, area: Rect, name: &str, shape: &CardShape<'_>) {
+    let dim = Style::default().fg(theme::dim());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(format!(" {name} "), dim));
+    let (text, style) = match shape {
+        CardShape::Tile { value } => (
+            value.clone(),
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        CardShape::Empty => ("—".into(), dim),
+        CardShape::Pending => ("…".into(), dim),
+        CardShape::Error(msg) => (
+            format!("✗ {}", truncate(msg, CUSTOM_CELL_MAX_CHARS)),
+            Style::default().fg(theme::err()),
+        ),
+        // Tables shouldn't reach this path (router gates them out), but
+        // be defensive: render a one-line "see table" placeholder.
+        CardShape::Table { .. } => ("table".into(), dim),
+    };
+    let para = Paragraph::new(Line::from(Span::styled(text, style)))
+        .block(block)
+        .alignment(Alignment::Center);
+    frame.render_widget(para, area);
+}
+
+fn render_table_card(frame: &mut Frame, area: Rect, name: &str, shape: &CardShape<'_>) {
+    let dim = Style::default().fg(theme::dim());
+    let CardShape::Table { qr, total_rows } = shape else {
+        return;
+    };
+    let visible = (*total_rows).min(CUSTOM_TABLE_VISIBLE_ROWS);
+    let header_cells: Vec<String> = qr.columns.iter().cloned().collect();
+    let header = TableRow::new(header_cells).style(
+        Style::default()
+            .fg(theme::dim())
+            .add_modifier(Modifier::BOLD),
+    );
+    let body: Vec<TableRow> = qr
+        .rows
+        .iter()
+        .take(visible)
+        .map(|r| {
+            TableRow::new(
+                r.cells()
+                    .iter()
+                    .map(|c| truncate(&cell_display(c), CUSTOM_CELL_MAX_CHARS).to_string())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let ncols = qr.columns.len().max(1);
+    let widths: Vec<Constraint> = (0..ncols)
+        .map(|_| Constraint::Percentage((100 / ncols as u16).max(1)))
+        .collect();
+    let title = format!(" {name} · {total_rows} rows ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(title, dim));
+    let table = Table::new(body, widths).header(header).block(block);
+    frame.render_widget(table, area);
+
+    if *total_rows > CUSTOM_TABLE_VISIBLE_ROWS {
+        // Overflow footer: render a 1-row strip at the bottom of the
+        // table area, just inside the bottom border.
+        let footer_y = area.y + area.height.saturating_sub(2);
+        if footer_y >= area.y + 1 && area.height >= 4 {
+            let footer_area = Rect {
+                x: area.x + 1,
+                y: footer_y,
+                width: area.width.saturating_sub(2),
+                height: 1,
+            };
+            let extra = total_rows - CUSTOM_TABLE_VISIBLE_ROWS;
+            let footer = Paragraph::new(Line::from(Span::styled(
+                format!("  +{extra} more rows · open in REPL for full view"),
+                dim,
+            )));
+            frame.render_widget(footer, footer_area);
+        }
     }
 }
 
@@ -1133,7 +1539,7 @@ mod tests {
 
     #[test]
     fn missing_table_outcome_downgrades_to_dash() {
-        let mut s = SummaryState::new("com.example".into(), "now".into());
+        let mut s = SummaryState::new("com.example".into(), "now".into(), Vec::new());
         s.on_cell(
             SummaryKey::JankFrameCount,
             SummaryCellOutcome::MissingTable,
@@ -1155,7 +1561,6 @@ mod tests {
                 | SummaryKey::JankFrameCount
                 | SummaryKey::TotalFrameCount
                 | SummaryKey::FrameDurPercentiles
-                | SummaryKey::PeakRssBytes
                 | SummaryKey::MainThreadRunningNs
                 | SummaryKey::MainThreadTotalNs
                 | SummaryKey::StartupInfo
@@ -1454,14 +1859,11 @@ mod tests {
     }
 
     #[test]
-    fn peak_rss_and_thread_state_queries_embed_package() {
+    fn thread_state_queries_embed_package() {
         let ctx = SummaryContext {
             package_name: "com.foo.bar".into(),
         };
         let qs = SummaryKey::all_queries(&ctx);
-        let rss = qs.iter().find(|q| q.key == SummaryKey::PeakRssBytes).unwrap();
-        assert!(rss.sql.contains("'com.foo.bar'"));
-        assert!(rss.sql.contains("mem.rss"));
 
         let running = qs
             .iter()
@@ -1476,5 +1878,190 @@ mod tests {
             .unwrap();
         assert!(total.sql.contains("'com.foo.bar'"));
         assert!(!total.sql.contains("state = '"));
+    }
+
+    fn qr_1x1(val: Cell) -> QueryResult {
+        QueryResult {
+            columns: vec!["v".into()],
+            rows: vec![Row::new_for_test(vec![val])],
+            elapsed_ms: None,
+        }
+    }
+
+    fn custom_query(name: &str, sql: &str) -> super::super::worker::CustomQuery {
+        super::super::worker::CustomQuery {
+            name: name.into(),
+            sql: sql.into(),
+        }
+    }
+
+    fn qr_multi_row(n: usize) -> QueryResult {
+        QueryResult {
+            columns: vec!["x".into()],
+            rows: (0..n)
+                .map(|i| Row::new_for_test(vec![Cell::Int(i as i64)]))
+                .collect(),
+            elapsed_ms: None,
+        }
+    }
+
+    #[test]
+    fn shape_for_classifies_each_result_kind() {
+        // 1×1 → Tile
+        let tile_state = CustomResultState::Done(qr_1x1(Cell::Int(42)));
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&tile_state)),
+            CardShape::Tile { .. }
+        ));
+
+        // 1×N → Table (single-row-multi-col still goes to table for v1)
+        let srmc = CustomResultState::Done(QueryResult {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![Row::new_for_test(vec![Cell::Int(1), Cell::Int(2)])],
+            elapsed_ms: None,
+        });
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&srmc)),
+            CardShape::Table { .. }
+        ));
+
+        // N×M → Table
+        let nm = CustomResultState::Done(qr_multi_row(5));
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&nm)),
+            CardShape::Table { .. }
+        ));
+
+        // Empty rows → Empty
+        let empty = CustomResultState::Done(QueryResult {
+            columns: vec!["x".into()],
+            rows: Vec::new(),
+            elapsed_ms: None,
+        });
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&empty)),
+            CardShape::Empty
+        ));
+
+        // Error
+        let err = CustomResultState::Error("boom".into());
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&err)),
+            CardShape::Error(_)
+        ));
+
+        // Pending (no entry, or Pending state)
+        assert!(matches!(
+            CustomMetricsState::shape_for(None),
+            CardShape::Pending
+        ));
+        let pending = CustomResultState::Pending;
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&pending)),
+            CardShape::Pending
+        ));
+    }
+
+    #[test]
+    fn rendered_height_for_empty_section_is_zero() {
+        let empty = CustomMetricsState::new(Vec::new());
+        assert_eq!(empty.rendered_height(100), 0);
+    }
+
+    #[test]
+    fn rendered_height_packs_tiles_into_rows_of_three() {
+        // 5 tile-shaped cards (all Pending → tile-like) → 2 rows of tiles.
+        let cs = CustomMetricsState::new(
+            (0..5)
+                .map(|i| custom_query(&format!("q{i}"), "SELECT 1"))
+                .collect(),
+        );
+        // 2 rows × CUSTOM_TILE_HEIGHT
+        assert_eq!(cs.rendered_height(100), 2 * CUSTOM_TILE_HEIGHT);
+    }
+
+    #[test]
+    fn rendered_height_each_table_takes_borders_plus_visible_rows() {
+        // One query with a 10-row result → Table card.
+        // Expected: 2 borders + 1 header + CUSTOM_TABLE_VISIBLE_ROWS rows + 1 overflow line.
+        let mut cs = CustomMetricsState::new(vec![custom_query("a", "SELECT 1")]);
+        cs.on_result("a".into(), Ok(qr_multi_row(10)));
+        let expected = 2 + 1 + CUSTOM_TABLE_VISIBLE_ROWS as u16 + 1;
+        assert_eq!(cs.rendered_height(100), expected);
+    }
+
+    #[test]
+    fn compact_collapses_tables_into_tiles_with_row_count() {
+        // In compact mode, a multi-row result that would render as a
+        // Table becomes a Tile displaying "N rows".
+        let done = CustomResultState::Done(qr_multi_row(7));
+        match CustomMetricsState::shape_for_with(Some(&done), true) {
+            CardShape::Tile { value } => assert_eq!(value, "7 rows"),
+            other => panic!("expected Tile, got {other:?}"),
+        }
+        // Compact with exactly one row uses singular.
+        let one = CustomResultState::Done(QueryResult {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![Row::new_for_test(vec![Cell::Int(1), Cell::Int(2)])],
+            elapsed_ms: None,
+        });
+        match CustomMetricsState::shape_for_with(Some(&one), true) {
+            CardShape::Tile { value } => assert_eq!(value, "1 row"),
+            other => panic!("expected Tile, got {other:?}"),
+        }
+        // Compact doesn't affect 1×1 Tile results.
+        let tile = CustomResultState::Done(qr_1x1(Cell::Int(42)));
+        assert!(matches!(
+            CustomMetricsState::shape_for_with(Some(&tile), true),
+            CardShape::Tile { .. }
+        ));
+    }
+
+    #[test]
+    fn compact_mode_fits_in_less_space() {
+        // Three table-shaped queries expanded vs compact.
+        let mut cs = CustomMetricsState::new(vec![
+            custom_query("a", "1"),
+            custom_query("b", "2"),
+            custom_query("c", "3"),
+        ]);
+        cs.on_result("a".into(), Ok(qr_multi_row(8)));
+        cs.on_result("b".into(), Ok(qr_multi_row(8)));
+        cs.on_result("c".into(), Ok(qr_multi_row(8)));
+        let expanded = cs.rendered_height_with(100, false);
+        let compact = cs.rendered_height_with(100, true);
+        assert!(
+            compact < expanded,
+            "compact ({compact}) should be strictly smaller than expanded ({expanded})"
+        );
+    }
+
+    #[test]
+    fn rendered_height_capped_at_max() {
+        // 20 tile-shaped cards — unbounded would be 7 rows × 3 = 21. Cap at 10.
+        let cs = CustomMetricsState::new(
+            (0..20)
+                .map(|i| custom_query(&format!("q{i}"), "SELECT 1"))
+                .collect(),
+        );
+        assert_eq!(cs.rendered_height(10), 10);
+    }
+
+    #[test]
+    fn custom_metrics_records_ok_and_error_results() {
+        let mut s = CustomMetricsState::new(vec![
+            custom_query("a", "SELECT 1"),
+            custom_query("b", "SELECT * FROM missing"),
+        ]);
+        s.on_result("a".into(), Ok(qr_1x1(Cell::Int(1))));
+        s.on_result("b".into(), Err("no such table".into()));
+        assert!(matches!(
+            s.results.get("a"),
+            Some(CustomResultState::Done(_))
+        ));
+        assert!(matches!(
+            s.results.get("b"),
+            Some(CustomResultState::Error(_))
+        ));
     }
 }

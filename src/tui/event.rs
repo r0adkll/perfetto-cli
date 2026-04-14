@@ -31,17 +31,6 @@ pub enum AppEvent {
     CloudProviderStatus { provider_id: String, authenticated: bool },
     /// Progress / results from the analysis screen's background worker.
     Analysis(AnalysisEvent),
-    /// Progress / results from one side of the two-trace diff screen.
-    /// Both sides emit the same `AnalysisEvent` shape; the `side` field
-    /// tells the screen which of the two `SummaryState`s to update.
-    Diff { side: DiffSide, event: AnalysisEvent },
-}
-
-/// Which half of the diff screen an event belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffSide {
-    Left,
-    Right,
 }
 
 pub struct EventBus {
