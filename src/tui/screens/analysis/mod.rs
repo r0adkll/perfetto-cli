@@ -494,31 +494,33 @@ impl AnalysisScreen {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let hints: &[&str] = match (&self.state, self.tab) {
+        // Each hint is a (chord, verb) pair. Chords render in
+        // `theme::title()` (accent + bold) to match the rest of the app's
+        // footer style (see `session_detail::render`); verbs render in
+        // the default style.
+        let hints: &[(&str, &str)] = match (&self.state, self.tab) {
             (State::Ready { .. }, Tab::Summary) => &[
-                "[1/2] tab", "[r] refresh", "[o] open in UI", "[q] back",
+                ("[1/2]", " tab  "),
+                ("[r]", " refresh  "),
+                ("[o]", " open in UI  "),
+                ("[q]", " back"),
             ],
             (State::Ready { .. }, Tab::Repl) => &[
-                "Tab switch pane",
-                "Alt+Enter run",
-                "↑/↓ history (empty)",
-                "Shift+↑/↓ scroll",
-                "Ctrl+O open in UI",
-                "Ctrl+Q back",
+                ("[Tab]", " switch pane  "),
+                ("[Alt+Enter]", " run  "),
+                ("[↑/↓]", " history (empty)  "),
+                ("[Shift+↑/↓]", " scroll  "),
+                ("[Ctrl+O]", " open in UI  "),
+                ("[Ctrl+Q]", " back"),
             ],
-            _ => &["[o] open in UI", "[q] back"],
+            _ => &[("[o]", " open in UI  "), ("[q]", " back")],
         };
-        let spans: Vec<Span> = hints
-            .iter()
-            .enumerate()
-            .flat_map(|(i, h)| {
-                let sep = if i == 0 { "" } else { "  " };
-                vec![
-                    Span::styled(sep, theme::hint()),
-                    Span::styled(*h, theme::hint()),
-                ]
-            })
-            .collect();
+        let mut spans: Vec<Span> = Vec::with_capacity(hints.len() * 2 + 1);
+        spans.push(Span::raw(" "));
+        for (chord, verb) in hints {
+            spans.push(Span::styled(*chord, theme::title()));
+            spans.push(Span::raw(*verb));
+        }
         frame.render_widget(
             Paragraph::new(Line::from(spans)).alignment(Alignment::Left),
             area,
