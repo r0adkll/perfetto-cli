@@ -419,7 +419,19 @@ impl SummaryState {
             self.cells.get(&SummaryKey::RssOverTime),
             Some(CellState::Rows(rows)) if !rows.is_empty()
         );
-        let custom_height = self.custom.rendered_height();
+        // Budget for the Custom metrics section: subtract the always-present
+        // regions (context + health + ribbon + min hotspots) and any
+        // conditional sections, then cap at half of what's left so custom
+        // metrics can't starve the rest of Summary.
+        let mut reserved: u16 = 3 /* context */ + 3 /* health */ + 3 /* ribbon */ + 5 /* min hotspots */;
+        if show_startup {
+            reserved = reserved.saturating_add(3);
+        }
+        if show_memory {
+            reserved = reserved.saturating_add(5);
+        }
+        let custom_max = area.height.saturating_sub(reserved) / 2;
+        let custom_height = self.custom.rendered_height(custom_max);
 
         let mut constraints = vec![
             Constraint::Length(3), // context strip
@@ -767,16 +779,65 @@ impl SummaryState {
     }
 }
 
-/// Cap for how many custom-metric rows we render before truncating. Beyond
-/// this, a single overflow line points the user at the REPL. Arbitrary
-/// but picked so the section doesn't dominate the Summary tab on a
-/// typical terminal; easy to bump later or make configurable.
-const CUSTOM_VISIBLE_CAP: usize = 8;
+/// Number of body rows we show in a single custom-metric table card
+/// before truncating. Beyond this, a footer line points at the REPL.
+const CUSTOM_TABLE_VISIBLE_ROWS: usize = 4;
 
-/// Truncate display lines wider than this. Keeps the section readable on
-/// narrow terminals and prevents a pathological multi-row result from
-/// blowing out a line.
-const CUSTOM_LINE_MAX_CHARS: usize = 80;
+/// How many tile-shaped (1×1) custom-metric cards we pack into one
+/// horizontal row. Three matches the canned health-tile grid (~33%
+/// each), gives single-value KPIs comfortable breathing room.
+const CUSTOM_TILES_PER_ROW: usize = 3;
+
+/// Vertical size of one tile / status card (border + value + border).
+const CUSTOM_TILE_HEIGHT: u16 = 3;
+
+/// Cell-display truncation in custom-metric tables — matches the
+/// existing main-thread hotspots cap.
+const CUSTOM_CELL_MAX_CHARS: usize = 40;
+
+/// Per-shape card classification. Computed at render time from the
+/// live `QueryResult`, not stored — the same query can change shape
+/// across traces (a result with 1 row on one capture might be 5 rows
+/// on another).
+#[derive(Debug)]
+enum CardShape<'a> {
+    /// 1×1 result — render as a small tile, like the canned health
+    /// tiles.
+    Tile { value: String },
+    /// Multi-row tabular result — render as an inline Table card.
+    /// `total_rows` lets the renderer decide whether to show an
+    /// overflow footer.
+    Table { qr: &'a QueryResult, total_rows: usize },
+    /// Empty result — render as a tile of `—`. Same height as a Tile,
+    /// keeps the section tidy.
+    Empty,
+    /// Worker result hasn't arrived yet — render as a `…` tile.
+    Pending,
+    /// Worker returned an error (typically: query references a missing
+    /// table). Render as a red status card.
+    Error(&'a str),
+}
+
+impl<'a> CardShape<'a> {
+    /// Vertical row count this card occupies when rendered.
+    fn height(&self) -> u16 {
+        match self {
+            CardShape::Tile { .. } | CardShape::Empty | CardShape::Pending | CardShape::Error(_) => {
+                CUSTOM_TILE_HEIGHT
+            }
+            CardShape::Table { total_rows, .. } => {
+                let visible = (*total_rows).min(CUSTOM_TABLE_VISIBLE_ROWS) as u16;
+                let overflow = if *total_rows > CUSTOM_TABLE_VISIBLE_ROWS { 1 } else { 0 };
+                // borders (2) + header (1) + visible rows + optional overflow line
+                3 + visible + overflow
+            }
+        }
+    }
+
+    fn is_tile_like(&self) -> bool {
+        !matches!(self, CardShape::Table { .. })
+    }
+}
 
 impl CustomMetricsState {
     fn new(queries: Vec<super::worker::CustomQuery>) -> Self {
@@ -795,84 +856,292 @@ impl CustomMetricsState {
         self.results.insert(name, state);
     }
 
-    /// Pre-compute the total vertical size the section needs. 0 means
-    /// "no queries — collapse this section entirely." Otherwise: 1 row
-    /// for the heading border + one row per visible query + 1 row for
-    /// the optional overflow indicator.
-    fn rendered_height(&self) -> u16 {
+    fn shape_for(state: Option<&CustomResultState>) -> CardShape<'_> {
+        match state {
+            None | Some(CustomResultState::Pending) => CardShape::Pending,
+            Some(CustomResultState::Error(msg)) => CardShape::Error(msg),
+            Some(CustomResultState::Done(qr)) => {
+                if qr.rows.is_empty() {
+                    CardShape::Empty
+                } else if qr.rows.len() == 1 && qr.columns.len() == 1 {
+                    let value = qr
+                        .rows
+                        .first()
+                        .and_then(|r| r.cells().first())
+                        .map(cell_display)
+                        .unwrap_or_else(|| "—".into());
+                    CardShape::Tile { value }
+                } else {
+                    CardShape::Table {
+                        qr,
+                        total_rows: qr.rows.len(),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Walk cards in render order, accumulating heights. Tiles pack
+    /// `CUSTOM_TILES_PER_ROW` per row (one row = `CUSTOM_TILE_HEIGHT`
+    /// regardless of how many tiles are in it). Tables take a full
+    /// row each. Returns 0 when the section is empty so the parent
+    /// collapses the constraint. Caps at `max_height` — anything
+    /// beyond becomes the overflow indicator.
+    fn rendered_height(&self, max_height: u16) -> u16 {
         if self.queries.is_empty() {
             return 0;
         }
-        // 2 rows of border + content.
-        let visible = self.queries.len().min(CUSTOM_VISIBLE_CAP);
-        let overflow_row = if self.queries.len() > CUSTOM_VISIBLE_CAP { 1 } else { 0 };
-        (2 + visible + overflow_row) as u16
+        let cards = self.classify();
+        let mut h: u16 = 0;
+        let mut tile_in_progress = 0u16; // tiles staged for the current row
+        for (_, shape) in &cards {
+            if shape.is_tile_like() {
+                tile_in_progress += 1;
+                if tile_in_progress as usize >= CUSTOM_TILES_PER_ROW {
+                    h = h.saturating_add(CUSTOM_TILE_HEIGHT);
+                    tile_in_progress = 0;
+                }
+            } else {
+                if tile_in_progress > 0 {
+                    h = h.saturating_add(CUSTOM_TILE_HEIGHT);
+                    tile_in_progress = 0;
+                }
+                h = h.saturating_add(shape.height());
+            }
+        }
+        if tile_in_progress > 0 {
+            h = h.saturating_add(CUSTOM_TILE_HEIGHT);
+        }
+        h.min(max_height)
+    }
+
+    fn classify(&self) -> Vec<(&str, CardShape<'_>)> {
+        self.queries
+            .iter()
+            .map(|q| {
+                let state = self.results.get(&q.name);
+                (q.name.as_str(), Self::shape_for(state))
+            })
+            .collect()
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let dim = Style::default().fg(theme::dim());
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(dim)
-            .title(Span::styled(" Custom metrics ", dim));
-
-        let mut lines: Vec<Line<'_>> = Vec::new();
-        for q in self.queries.iter().take(CUSTOM_VISIBLE_CAP) {
-            let state = self.results.get(&q.name);
-            lines.push(render_custom_line(&q.name, state));
+        if self.queries.is_empty() || area.height < CUSTOM_TILE_HEIGHT {
+            return;
         }
-        if self.queries.len() > CUSTOM_VISIBLE_CAP {
-            let overflow = self.queries.len() - CUSTOM_VISIBLE_CAP;
-            lines.push(Line::from(Span::styled(
-                format!("+{overflow} more — run in REPL to view"),
+        let dim = Style::default().fg(theme::dim());
+        let cards = self.classify();
+
+        // Pack tiles into rows of CUSTOM_TILES_PER_ROW (preserving the
+        // declaration order across tile/table classes), then track how
+        // much vertical area each rendered chunk needs. We render in
+        // two passes: first compute the chunk list with heights, then
+        // emit until we hit `area.height` and append an overflow line
+        // for whatever didn't fit.
+        let mut chunks: Vec<RenderChunk<'_>> = Vec::new();
+        let mut tile_buf: Vec<(&str, CardShape<'_>)> = Vec::new();
+        for (name, shape) in cards {
+            if shape.is_tile_like() {
+                tile_buf.push((name, shape));
+                if tile_buf.len() >= CUSTOM_TILES_PER_ROW {
+                    chunks.push(RenderChunk::TileRow(std::mem::take(&mut tile_buf)));
+                }
+            } else {
+                if !tile_buf.is_empty() {
+                    chunks.push(RenderChunk::TileRow(std::mem::take(&mut tile_buf)));
+                }
+                chunks.push(RenderChunk::TableCard { name, shape });
+            }
+        }
+        if !tile_buf.is_empty() {
+            chunks.push(RenderChunk::TileRow(tile_buf));
+        }
+
+        let mut used: u16 = 0;
+        let mut rendered_chunks = Vec::new();
+        let mut dropped_cards = 0usize;
+        for chunk in chunks {
+            let h = chunk.height();
+            // Reserve 1 row for an overflow indicator if anything later
+            // has to be skipped.
+            let remaining = area.height.saturating_sub(used);
+            if h > remaining || (h + 1 > remaining && rendered_chunks.iter().any(|_| true) && /* we may need overflow line */ false)
+            {
+                dropped_cards += chunk.card_count();
+                continue;
+            }
+            used = used.saturating_add(h);
+            rendered_chunks.push(chunk);
+        }
+        // Reserve a row for the overflow indicator if needed and if
+        // there's room — otherwise drop the last chunk so it fits.
+        if dropped_cards > 0 {
+            while used >= area.height && !rendered_chunks.is_empty() {
+                let last = rendered_chunks.pop().unwrap();
+                dropped_cards += last.card_count();
+                used = used.saturating_sub(last.height());
+            }
+        }
+
+        // Compute layout constraints from final chunk list.
+        let mut constraints: Vec<Constraint> =
+            rendered_chunks.iter().map(|c| Constraint::Length(c.height())).collect();
+        if dropped_cards > 0 {
+            constraints.push(Constraint::Length(1));
+        }
+        if constraints.is_empty() {
+            return;
+        }
+        let regions = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(area);
+
+        for (i, chunk) in rendered_chunks.iter().enumerate() {
+            chunk.render(frame, regions[i]);
+        }
+        if dropped_cards > 0 {
+            let idx = rendered_chunks.len();
+            let line = Paragraph::new(Line::from(Span::styled(
+                format!(
+                    "+{dropped_cards} metric{plural} not shown — switch to SQL tab to see them",
+                    plural = if dropped_cards == 1 { "" } else { "s" }
+                ),
                 dim,
             )));
+            frame.render_widget(line, regions[idx]);
         }
-
-        let para = Paragraph::new(lines).block(block);
-        frame.render_widget(para, area);
     }
 }
 
-/// Format one custom-metric line. Shape-aware:
-///  - Pending/missing → `name: …` / `name: —`
-///  - Error           → `name: ✗ <msg>`
-///  - 1×1 result      → `name: <value>`
-///  - 1×N single row  → `name: col1 · col2 · …`
-///  - N×M multi-row   → `name: col1 · col2 · … (+N rows)` (first row inline)
-/// Values wider than `CUSTOM_LINE_MAX_CHARS` are truncated.
-fn render_custom_line<'a>(name: &'a str, state: Option<&CustomResultState>) -> Line<'a> {
-    let label_style = Style::default().fg(theme::dim());
-    let value_style = Style::default()
-        .fg(theme::accent())
-        .add_modifier(Modifier::BOLD);
-    let err_style = Style::default().fg(theme::err());
+enum RenderChunk<'a> {
+    /// One horizontal row of up to `CUSTOM_TILES_PER_ROW` tile-like
+    /// cards (Tile / Empty / Pending / Error all qualify).
+    TileRow(Vec<(&'a str, CardShape<'a>)>),
+    /// One full-width table card.
+    TableCard { name: &'a str, shape: CardShape<'a> },
+}
 
-    let (value, style) = match state {
-        None | Some(CustomResultState::Pending) => ("…".to_string(), label_style),
-        Some(CustomResultState::Error(msg)) => (
-            format!("✗ {}", truncate(msg, CUSTOM_LINE_MAX_CHARS.saturating_sub(10))),
-            err_style,
+impl<'a> RenderChunk<'a> {
+    fn height(&self) -> u16 {
+        match self {
+            RenderChunk::TileRow(_) => CUSTOM_TILE_HEIGHT,
+            RenderChunk::TableCard { shape, .. } => shape.height(),
+        }
+    }
+
+    fn card_count(&self) -> usize {
+        match self {
+            RenderChunk::TileRow(tiles) => tiles.len(),
+            RenderChunk::TableCard { .. } => 1,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect) {
+        match self {
+            RenderChunk::TileRow(tiles) => {
+                let cols = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(
+                        (0..CUSTOM_TILES_PER_ROW)
+                            .map(|_| Constraint::Percentage(100 / CUSTOM_TILES_PER_ROW as u16))
+                            .collect::<Vec<_>>(),
+                    )
+                    .split(area);
+                for (i, (name, shape)) in tiles.iter().enumerate() {
+                    if i >= cols.len() {
+                        break;
+                    }
+                    render_tile_like(frame, cols[i], name, shape);
+                }
+            }
+            RenderChunk::TableCard { name, shape } => render_table_card(frame, area, name, shape),
+        }
+    }
+}
+
+fn render_tile_like(frame: &mut Frame, area: Rect, name: &str, shape: &CardShape<'_>) {
+    let dim = Style::default().fg(theme::dim());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(format!(" {name} "), dim));
+    let (text, style) = match shape {
+        CardShape::Tile { value } => (
+            value.clone(),
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
         ),
-        Some(CustomResultState::Done(qr)) => (format_custom_value(qr), value_style),
+        CardShape::Empty => ("—".into(), dim),
+        CardShape::Pending => ("…".into(), dim),
+        CardShape::Error(msg) => (
+            format!("✗ {}", truncate(msg, CUSTOM_CELL_MAX_CHARS)),
+            Style::default().fg(theme::err()),
+        ),
+        // Tables shouldn't reach this path (router gates them out), but
+        // be defensive: render a one-line "see table" placeholder.
+        CardShape::Table { .. } => ("table".into(), dim),
     };
-    Line::from(vec![
-        Span::styled(format!("  {name}: "), label_style),
-        Span::styled(truncate(&value, CUSTOM_LINE_MAX_CHARS), style),
-    ])
+    let para = Paragraph::new(Line::from(Span::styled(text, style)))
+        .block(block)
+        .alignment(Alignment::Center);
+    frame.render_widget(para, area);
 }
 
-fn format_custom_value(qr: &QueryResult) -> String {
-    if qr.rows.is_empty() {
-        return "—".into();
-    }
-    let first = &qr.rows[0];
-    let cell_strs: Vec<String> = first.cells().iter().map(cell_display).collect();
-    let inline = cell_strs.join(" · ");
-    if qr.rows.len() > 1 {
-        format!("{inline} (+{} rows)", qr.rows.len() - 1)
-    } else {
-        inline
+fn render_table_card(frame: &mut Frame, area: Rect, name: &str, shape: &CardShape<'_>) {
+    let dim = Style::default().fg(theme::dim());
+    let CardShape::Table { qr, total_rows } = shape else {
+        return;
+    };
+    let visible = (*total_rows).min(CUSTOM_TABLE_VISIBLE_ROWS);
+    let header_cells: Vec<String> = qr.columns.iter().cloned().collect();
+    let header = TableRow::new(header_cells).style(
+        Style::default()
+            .fg(theme::dim())
+            .add_modifier(Modifier::BOLD),
+    );
+    let body: Vec<TableRow> = qr
+        .rows
+        .iter()
+        .take(visible)
+        .map(|r| {
+            TableRow::new(
+                r.cells()
+                    .iter()
+                    .map(|c| truncate(&cell_display(c), CUSTOM_CELL_MAX_CHARS).to_string())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let ncols = qr.columns.len().max(1);
+    let widths: Vec<Constraint> = (0..ncols)
+        .map(|_| Constraint::Percentage((100 / ncols as u16).max(1)))
+        .collect();
+    let title = format!(" {name} · {total_rows} rows ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(title, dim));
+    let table = Table::new(body, widths).header(header).block(block);
+    frame.render_widget(table, area);
+
+    if *total_rows > CUSTOM_TABLE_VISIBLE_ROWS {
+        // Overflow footer: render a 1-row strip at the bottom of the
+        // table area, just inside the bottom border.
+        let footer_y = area.y + area.height.saturating_sub(2);
+        if footer_y >= area.y + 1 && area.height >= 4 {
+            let footer_area = Rect {
+                x: area.x + 1,
+                y: footer_y,
+                width: area.width.saturating_sub(2),
+                height: 1,
+            };
+            let extra = total_rows - CUSTOM_TABLE_VISIBLE_ROWS;
+            let footer = Paragraph::new(Line::from(Span::styled(
+                format!("  +{extra} more rows · open in REPL for full view"),
+                dim,
+            )));
+            frame.render_widget(footer, footer_area);
+        }
     }
 }
 
@@ -1578,50 +1847,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn format_custom_value_single_cell_renders_value() {
-        let qr = qr_1x1(Cell::Int(42));
-        assert_eq!(format_custom_value(&qr), "42");
-    }
-
-    #[test]
-    fn format_custom_value_single_row_multi_col_joins_with_mid_dot() {
-        let qr = QueryResult {
-            columns: vec!["a".into(), "b".into(), "c".into()],
-            rows: vec![Row::new_for_test(vec![
-                Cell::Int(1),
-                Cell::String("two".into()),
-                Cell::Int(3),
-            ])],
-            elapsed_ms: None,
-        };
-        assert_eq!(format_custom_value(&qr), "1 · two · 3");
-    }
-
-    #[test]
-    fn format_custom_value_multi_row_appends_rows_hint() {
-        let qr = QueryResult {
-            columns: vec!["x".into()],
-            rows: vec![
-                Row::new_for_test(vec![Cell::Int(1)]),
-                Row::new_for_test(vec![Cell::Int(2)]),
-                Row::new_for_test(vec![Cell::Int(3)]),
-            ],
-            elapsed_ms: None,
-        };
-        assert_eq!(format_custom_value(&qr), "1 (+2 rows)");
-    }
-
-    #[test]
-    fn format_custom_value_empty_result_is_dash() {
-        let qr = QueryResult {
-            columns: vec!["x".into()],
-            rows: Vec::new(),
-            elapsed_ms: None,
-        };
-        assert_eq!(format_custom_value(&qr), "—");
-    }
-
     fn custom_query(name: &str, sql: &str) -> super::super::worker::CustomQuery {
         super::super::worker::CustomQuery {
             name: name.into(),
@@ -1629,24 +1854,110 @@ mod tests {
         }
     }
 
+    fn qr_multi_row(n: usize) -> QueryResult {
+        QueryResult {
+            columns: vec!["x".into()],
+            rows: (0..n)
+                .map(|i| Row::new_for_test(vec![Cell::Int(i as i64)]))
+                .collect(),
+            elapsed_ms: None,
+        }
+    }
+
     #[test]
-    fn custom_metrics_section_height_accounts_for_overflow() {
-        // Empty queries → height 0 (section collapses).
+    fn shape_for_classifies_each_result_kind() {
+        // 1×1 → Tile
+        let tile_state = CustomResultState::Done(qr_1x1(Cell::Int(42)));
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&tile_state)),
+            CardShape::Tile { .. }
+        ));
+
+        // 1×N → Table (single-row-multi-col still goes to table for v1)
+        let srmc = CustomResultState::Done(QueryResult {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![Row::new_for_test(vec![Cell::Int(1), Cell::Int(2)])],
+            elapsed_ms: None,
+        });
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&srmc)),
+            CardShape::Table { .. }
+        ));
+
+        // N×M → Table
+        let nm = CustomResultState::Done(qr_multi_row(5));
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&nm)),
+            CardShape::Table { .. }
+        ));
+
+        // Empty rows → Empty
+        let empty = CustomResultState::Done(QueryResult {
+            columns: vec!["x".into()],
+            rows: Vec::new(),
+            elapsed_ms: None,
+        });
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&empty)),
+            CardShape::Empty
+        ));
+
+        // Error
+        let err = CustomResultState::Error("boom".into());
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&err)),
+            CardShape::Error(_)
+        ));
+
+        // Pending (no entry, or Pending state)
+        assert!(matches!(
+            CustomMetricsState::shape_for(None),
+            CardShape::Pending
+        ));
+        let pending = CustomResultState::Pending;
+        assert!(matches!(
+            CustomMetricsState::shape_for(Some(&pending)),
+            CardShape::Pending
+        ));
+    }
+
+    #[test]
+    fn rendered_height_for_empty_section_is_zero() {
         let empty = CustomMetricsState::new(Vec::new());
-        assert_eq!(empty.rendered_height(), 0);
+        assert_eq!(empty.rendered_height(100), 0);
+    }
 
-        // Below cap: 1 border row (top+bottom = 2) + N content rows.
-        let three = CustomMetricsState::new(vec![
-            custom_query("a", "1"),
-            custom_query("b", "2"),
-            custom_query("c", "3"),
-        ]);
-        assert_eq!(three.rendered_height(), 2 + 3);
+    #[test]
+    fn rendered_height_packs_tiles_into_rows_of_three() {
+        // 5 tile-shaped cards (all Pending → tile-like) → 2 rows of tiles.
+        let cs = CustomMetricsState::new(
+            (0..5)
+                .map(|i| custom_query(&format!("q{i}"), "SELECT 1"))
+                .collect(),
+        );
+        // 2 rows × CUSTOM_TILE_HEIGHT
+        assert_eq!(cs.rendered_height(100), 2 * CUSTOM_TILE_HEIGHT);
+    }
 
-        // Above cap: adds 1 row for the overflow hint.
-        let qs: Vec<_> = (0..12).map(|i| custom_query(&format!("q{i}"), "SELECT 1")).collect();
-        let overflow = CustomMetricsState::new(qs);
-        assert_eq!(overflow.rendered_height(), 2 + CUSTOM_VISIBLE_CAP as u16 + 1);
+    #[test]
+    fn rendered_height_each_table_takes_borders_plus_visible_rows() {
+        // One query with a 10-row result → Table card.
+        // Expected: 2 borders + 1 header + CUSTOM_TABLE_VISIBLE_ROWS rows + 1 overflow line.
+        let mut cs = CustomMetricsState::new(vec![custom_query("a", "SELECT 1")]);
+        cs.on_result("a".into(), Ok(qr_multi_row(10)));
+        let expected = 2 + 1 + CUSTOM_TABLE_VISIBLE_ROWS as u16 + 1;
+        assert_eq!(cs.rendered_height(100), expected);
+    }
+
+    #[test]
+    fn rendered_height_capped_at_max() {
+        // 20 tile-shaped cards — unbounded would be 7 rows × 3 = 21. Cap at 10.
+        let cs = CustomMetricsState::new(
+            (0..20)
+                .map(|i| custom_query(&format!("q{i}"), "SELECT 1"))
+                .collect(),
+        );
+        assert_eq!(cs.rendered_height(10), 10);
     }
 
     #[test]
