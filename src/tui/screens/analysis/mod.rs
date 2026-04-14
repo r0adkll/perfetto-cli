@@ -187,7 +187,7 @@ impl AnalysisScreen {
                         captured_at,
                         custom_queries.clone(),
                     ),
-                    repl: ReplState::new(),
+                    repl: ReplState::new(self.db.clone(), self.package_name.clone()),
                 };
                 // Kick off the summary immediately so the default tab fills in.
                 if let Some(tx) = &self.worker_tx {
@@ -213,7 +213,13 @@ impl AnalysisScreen {
                 }
             }
             AnalysisEvent::CustomResult { name, result } => {
-                if let State::Ready { summary, .. } = &mut self.state {
+                if let State::Ready { summary, repl, .. } = &mut self.state {
+                    // REPL needs the raw result to derive its saved-metric
+                    // latest-run summary; Summary consumes it into a
+                    // CellState for the Custom metrics section. Clone the
+                    // result into REPL before handing the owned value to
+                    // Summary.
+                    repl.on_custom_result(&name, &result);
                     summary.on_custom_result(name, result);
                 }
             }
@@ -346,29 +352,22 @@ impl AnalysisScreen {
                     ReplOutcome::Submit(sql) => {
                         let id = self.next_query_id;
                         self.next_query_id += 1;
-                        if let State::Ready { repl, .. } = &mut self.state {
-                            repl.on_submit(id, sql.clone());
-                        }
                         if let Some(tx) = &self.worker_tx {
                             let _ = tx.send(WorkerRequest::RunQuery { id, sql });
                         }
                     }
-                    ReplOutcome::SaveQuery { name, sql } => {
-                        match self.db.upsert_saved_query(&self.package_name, &name, &sql) {
-                            Ok(_) => {
-                                self.set_status(format!("saved as `{name}`"));
-                                // Refresh the custom-metrics section so the new
-                                // query renders immediately.
-                                let custom_queries = self.load_custom_queries();
-                                if let State::Ready { summary, .. } = &mut self.state {
-                                    summary.reset_custom(custom_queries.clone());
-                                }
-                                if let Some(tx) = &self.worker_tx {
-                                    let _ = tx.send(WorkerRequest::RunSummary { custom_queries });
-                                }
-                            }
-                            Err(e) => self.set_error(format!("save failed: {e:#}")),
+                    ReplOutcome::SavedMetricsChanged => {
+                        // REPL already wrote to the DB; just reload the
+                        // Summary snapshot and re-run the canned + custom
+                        // queries so the dashboard reflects the change.
+                        let custom_queries = self.load_custom_queries();
+                        if let State::Ready { summary, .. } = &mut self.state {
+                            summary.reset_custom(custom_queries.clone());
                         }
+                        if let Some(tx) = &self.worker_tx {
+                            let _ = tx.send(WorkerRequest::RunSummary { custom_queries });
+                        }
+                        self.set_status("saved metrics updated".into());
                     }
                     ReplOutcome::None => {}
                 }

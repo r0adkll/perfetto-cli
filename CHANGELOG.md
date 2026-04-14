@@ -14,16 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sessions list shows a dim `[imported]` tag next to imported sessions
 - Three new `sessions` columns (`is_imported`, `benchmark_json_path`, `import_source_dir`) with an additive migration so existing databases upgrade in place
 - **Local trace analysis via PerfettoSQL** — press `[a]` on any trace in session detail to open the Analysis screen, which spawns a pinned-version `trace_processor_shell` (downloaded + SHA-256 verified on first use, cached under `~/.config/perfetto-cli/bin/`), parses the trace, and runs queries locally
-- **Summary tab** on the Analysis screen — diagnostic dashboard with context strip (package · device · captured-at · duration), four health tiles (jank rate, frame times p50/p95, peak RSS, main-thread busy %), conditional startup card, memory-over-time sparkline, main-thread hotspots, and a data-sources ribbon (`ftrace ✓ · frame timeline ✓ · startups ✗ · thread state ✓`)
-- **SQL REPL tab** — multi-line `ratatui_textarea` input; `Alt+Enter` (works universally) or `Ctrl+Enter` (on terminals that forward the modifier) runs the query; history recall via ↑/↓ when the input is empty; 500-row result table with Shift+↑/↓ and PageUp/PageDown scrolling
+- **Summary tab** on the Analysis screen — diagnostic dashboard with context strip (package · device · captured-at · duration), three health tiles (jank rate, frame times p50/p95, main-thread busy %), conditional startup card, memory-over-time sparkline with inline min/peak callouts, main-thread hotspots, a "Custom metrics" section driven by user-saved queries, and a data-sources ribbon
+- **SQL tab — metric authoring surface** — three stacked panes (saved metrics list · result · multi-line editor). All actions via visible `Alt+` chords: `Alt+Enter` run, `Alt+S` save/update (prompts for name when new, updates in place when editing an existing metric), `Alt+L` load highlighted metric into editor, `Alt+N` new, `Alt+R` rename highlighted, `Alt+D` delete highlighted (with `[y]`/`[n]` confirm), `Alt+Up`/`Alt+Down` cycle highlight. Plain Enter inserts a newline; `Ctrl+U` / `Esc` clear. Result scroll on `Shift+Up/Down` / `PageUp/PageDown`. Ctrl+Enter also submits on terminals that forward the modifier
 - **Bracketed paste support** in all text inputs — multi-line pastes now land atomically in textareas instead of arriving as a stream of synthetic keystrokes; single-line inputs collapse newlines to spaces
-- **Saved queries (`:save <name>`)** — in the Analysis SQL REPL, run a query then submit `:save my_metric` to persist it for the current app's package. Saved queries auto-run on every Summary refresh and render as a compact "Custom metrics" section so each app can grow its own dashboard tailored to its instrumentation
+- **Per-app saved metrics** — each app's saved SQL queries live in a new `saved_queries` table keyed on `(package_name, name)` and auto-run on every Summary refresh. Builds a dashboard tailored to each app's instrumentation; metrics persist across every session for the same package
 
 ### Changed
-- Analysis screen tab switching via `Tab`/`Shift-Tab`; digit shortcuts `1`/`2` only active when the SQL textarea doesn't have focus, so SQL content can contain those characters; `Ctrl+Q`/`Ctrl+C` exit and `Ctrl+O` opens in `ui.perfetto.dev` when text input is focused
+- Analysis screen tab switching via `Tab`/`Shift-Tab`; digit shortcuts `1`/`2` only active when the SQL editor doesn't have focus, so SQL content can contain those characters; `Ctrl+Q`/`Ctrl+C` exit and `Ctrl+O` opens in `ui.perfetto.dev` when text input is focused
 
 ### Removed
-- **Two-trace diff screen** (pre-release) — single-sample comparison was too noisy and the 9-row canned metric set too generic to describe any specific app. Replaced by per-app saved queries (see Added). The `[space]` / `[D]` keybindings on session detail are gone
+- **Two-trace diff screen** (pre-release) — single-sample comparison was too noisy and the canned metric set too generic to describe any specific app. Replaced by per-app saved queries (see Added). The `[space]` / `[D]` keybindings on session detail are gone
+- **Peak RSS health tile** (pre-release) — redundant with the memory section's inline `peak` callout, which shows the same value scoped to the target app. Health row shrinks from four tiles to three
+- **`:save <name>` colon command** (pre-release) — replaced by the explicit `Alt+S` chord which prompts for a name inline when saving a new metric or updates in place when editing an existing one. Discoverability and management (rename, delete) both improve
+- **REPL Up/Down history recall** (pre-release) — superseded by the saved-metrics list (named, persistent, better)
 
 ### Fixed
 - Saving a session config in the editor now returns to the session detail screen instead of the session list

@@ -90,12 +90,30 @@ impl Database {
     /// succeeds if no row matches — callers that need to distinguish can
     /// check the return value (rows affected is not surfaced here; add if
     /// anyone needs it).
-    #[allow(dead_code)]
     pub fn delete_saved_query(&self, package_name: &str, name: &str) -> Result<()> {
         let conn = self.lock();
         conn.execute(
             "DELETE FROM saved_queries WHERE package_name = ?1 AND name = ?2",
             params![package_name, name],
+        )?;
+        Ok(())
+    }
+
+    /// Change the display name of a saved query. A collision with an
+    /// existing `(package_name, new_name)` surfaces as the rusqlite
+    /// UNIQUE-constraint error; callers show it as a status message.
+    /// Idempotent when no row matches `old_name`.
+    pub fn rename_saved_query(
+        &self,
+        package_name: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE saved_queries SET name = ?1 \
+             WHERE package_name = ?2 AND name = ?3",
+            params![new_name, package_name, old_name],
         )?;
         Ok(())
     }
@@ -165,6 +183,37 @@ mod tests {
         // Should not error even though there's nothing to delete.
         db.delete_saved_query("com.app", "missing").unwrap();
         assert_eq!(db.list_saved_queries("com.app").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rename_updates_name_in_place() {
+        let db = test_db();
+        db.upsert_saved_query("com.app", "old", "SELECT 1").unwrap();
+        db.rename_saved_query("com.app", "old", "new").unwrap();
+        let list = db.list_saved_queries("com.app").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "new");
+        assert_eq!(list[0].sql, "SELECT 1");
+    }
+
+    #[test]
+    fn rename_noop_when_old_name_missing() {
+        let db = test_db();
+        db.upsert_saved_query("com.app", "keep", "SELECT 1").unwrap();
+        // Should not error; nothing to rename.
+        db.rename_saved_query("com.app", "ghost", "whatever").unwrap();
+        let list = db.list_saved_queries("com.app").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "keep");
+    }
+
+    #[test]
+    fn rename_to_existing_name_surfaces_error() {
+        let db = test_db();
+        db.upsert_saved_query("com.app", "a", "SELECT 1").unwrap();
+        db.upsert_saved_query("com.app", "b", "SELECT 2").unwrap();
+        let res = db.rename_saved_query("com.app", "a", "b");
+        assert!(res.is_err(), "UNIQUE constraint should surface as Err");
     }
 
     #[test]

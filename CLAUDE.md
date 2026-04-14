@@ -176,15 +176,35 @@ module" errors and downgrades that tile to `MissingTable` (rendered as
 `—`) instead of poisoning the whole panel. This is how jank/startup
 metrics gracefully no-op on older Android traces.
 
-REPL input is a `ratatui_textarea::TextArea` (multi-line — queries often
-are). **Submit is `Alt+Enter` (primary) or `Ctrl+Enter`** — both wired to
-the same path, but Alt+Enter works on every macOS terminal. Ctrl+Enter
-only reaches us on terminals that forward the modifier via the kitty
-keyboard protocol / CSI u (Kitty, WezTerm, Ghostty, iTerm2 with the
-option enabled, Alacritty ≥ 0.15); default macOS Terminal.app collapses
-it to plain Enter. Document `Alt+Enter` first in every user-facing copy
-change. Plain Enter inserts a newline. `Ctrl+U` and `Esc` clear the
-input.
+**REPL tab is a metric-authoring surface**, not an SQL playground. Three
+stacked panes: saved-metrics list (top) → result (middle) → editor
+(bottom). Saved metrics persist in the `saved_queries` DB table scoped
+by `package_name` and auto-run on every Summary refresh to populate the
+Summary tab's "Custom metrics" section.
+
+`ReplState` owns its own `Database` handle. Mutating actions (save,
+rename, delete) write to the DB directly and emit
+`KeyOutcome::SavedMetricsChanged`; the parent screen responds by
+reloading the Summary snapshot and re-dispatching `RunSummary`. The
+REPL stays DB-free for query execution — that still goes through the
+worker via `KeyOutcome::Submit(sql)`.
+
+**Every action is an `Alt+<chord>`**, never a colon-command:
+- `Alt+Enter` run editor · `Alt+S` save/update · `Alt+N` new
+- `Alt+L` load highlighted · `Alt+R` rename · `Alt+D` delete (with
+  `[y]`/`[n]` confirm)
+- `Alt+Up`/`Alt+Down` cycle the saved-metric highlight
+
+Plain Enter always inserts a newline in the editor (ratatui_textarea
+default). `Ctrl+U` and `Esc` clear the editor. Modal sub-states
+(`Mode::{SaveAs, Rename, ConfirmDelete}`) replace the editor pane with
+an inline prompt and mirror `session_detail::Mode::Rename`'s
+text_input::apply flow. An `editing: Some(name)` field tracks which
+saved metric the editor content maps to; a `*` dirty marker appears in
+the editor title whenever editor bytes diverge from the saved SQL.
+Ctrl+Enter also submits on the small subset of terminals that forward
+the modifier (kitty keyboard protocol / CSI u); Alt+Enter is the
+universally-working path and the documented chord.
 
 **Quick-keys are disabled when a text input has focus.** On the Analysis
 screen's REPL tab (`text_focused = Ready + Tab::Repl`), the single-char
@@ -196,12 +216,9 @@ uncommon. Any future screen that adds a text input should follow this
 pattern rather than fighting with single-char shortcuts — see
 `AnalysisScreen::on_key` for the template.
 
-History navigation: Up/Down cycle history only when the input is empty OR
-the user is already mid-recall (`recall_idx.is_some()`). Any keystroke
-other than the recall arrows clears the recall marker, after which
-Up/Down feed the textarea for cursor movement. Matches shell convention:
-Up-Up-Up cycles back, but once you type, arrows navigate the buffer.
-Result table scrolls on Shift+Up/Down and PageUp/PageDown.
+Result table scrolls on Shift+Up/Down and PageUp/PageDown. There is no
+Up/Down history recall — saved metrics replaced that flow (persistent
+named recall strictly beats ephemeral arrow-key cycling).
 
 ### Local trace analysis (PerfettoSQL)
 
