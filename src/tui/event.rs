@@ -5,11 +5,17 @@ use tokio::sync::mpsc;
 use crate::adb::DeviceInfo;
 use crate::cloud::UploadProgress;
 use crate::perfetto::capture::{CaptureEvent, CaptureResult};
+use crate::tui::screens::analysis::AnalysisEvent;
 use crate::tui::screens::device_picker::DeviceEntry;
 
 pub enum AppEvent {
     Key(KeyEvent),
     Tick,
+    /// Bracketed paste delivered by the terminal as one atomic event. Screens
+    /// with text inputs decide how to apply it (most use
+    /// `TextArea::insert_str`). Without this, pasting would come through as
+    /// a stream of synthetic key events.
+    Paste(String),
     DevicesLoaded(Result<Vec<DeviceEntry>, String>),
     PackagesLoaded(Result<Vec<String>, String>),
     DeviceInfoLoaded(Result<DeviceInfo, String>),
@@ -23,6 +29,19 @@ pub enum AppEvent {
     CloudUploadDone(Result<crate::cloud::UploadResult, String>),
     /// Auth status check result for a provider.
     CloudProviderStatus { provider_id: String, authenticated: bool },
+    /// Progress / results from the analysis screen's background worker.
+    Analysis(AnalysisEvent),
+    /// Progress / results from one side of the two-trace diff screen.
+    /// Both sides emit the same `AnalysisEvent` shape; the `side` field
+    /// tells the screen which of the two `SummaryState`s to update.
+    Diff { side: DiffSide, event: AnalysisEvent },
+}
+
+/// Which half of the diff screen an event belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSide {
+    Left,
+    Right,
 }
 
 pub struct EventBus {
@@ -48,8 +67,13 @@ pub fn start() -> EventBus {
     tokio::spawn(async move {
         let mut events = EventStream::new();
         while let Some(Ok(ev)) = events.next().await {
-            if let CtEvent::Key(k) = ev {
-                if tx_key.send(AppEvent::Key(k)).is_err() {
+            let out = match ev {
+                CtEvent::Key(k) => Some(AppEvent::Key(k)),
+                CtEvent::Paste(s) => Some(AppEvent::Paste(s)),
+                _ => None,
+            };
+            if let Some(ev) = out {
+                if tx_key.send(ev).is_err() {
                     break;
                 }
             }

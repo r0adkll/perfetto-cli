@@ -14,7 +14,9 @@ use crate::perfetto::capture::Cancel;
 use crate::session::Session;
 use crate::tui::Tui;
 use crate::tui::event::{self, AppEvent};
+use crate::tui::screens::analysis::{AnalysisAction, AnalysisScreen};
 use crate::tui::screens::capture::{CaptureAction, CaptureScreen};
+use crate::tui::screens::diff::{DiffAction, DiffScreen};
 use crate::tui::screens::cloud_providers::{CloudProvidersScreen, ProviderAction};
 use crate::tui::screens::command_set_editor::{CmdEditorAction, CommandSetEditorScreen};
 use crate::tui::screens::command_set_list::{CommandSetListAction, CommandSetListScreen};
@@ -57,6 +59,8 @@ enum Screen {
     Capture(CaptureScreen),
     ThemePicker(ThemePickerScreen),
     CloudProviders(CloudProvidersScreen),
+    Analysis(AnalysisScreen),
+    Diff(DiffScreen),
 }
 
 pub struct App {
@@ -145,6 +149,8 @@ impl App {
             Screen::Capture(_) => "Perfetto CLI — Capturing".to_string(),
             Screen::ThemePicker(_) => "Perfetto CLI — Theme".to_string(),
             Screen::CloudProviders(_) => "Perfetto CLI — Cloud Providers".to_string(),
+            Screen::Analysis(_) => "Perfetto CLI — Analyze".to_string(),
+            Screen::Diff(_) => "Perfetto CLI — Diff".to_string(),
         };
         let _ = execute!(std::io::stdout(), SetTitle(title));
 
@@ -160,6 +166,8 @@ impl App {
             Screen::Capture(c) => c.render(frame),
             Screen::ThemePicker(tp) => tp.render(frame),
             Screen::CloudProviders(cp) => cp.render(frame),
+            Screen::Analysis(a) => a.render(frame),
+            Screen::Diff(d) => d.render(frame),
         }
     }
 
@@ -286,6 +294,28 @@ impl App {
                     d.on_upload_done(&self.db, result);
                 }
             }
+            AppEvent::Analysis(ev) => {
+                if let Screen::Analysis(a) = &mut self.screen {
+                    a.on_event(ev);
+                }
+            }
+            AppEvent::Diff { side, event } => {
+                if let Screen::Diff(d) = &mut self.screen {
+                    d.on_event(side, event);
+                }
+            }
+            AppEvent::Paste(text) => self.handle_paste(text),
+            _ => {}
+        }
+    }
+
+    /// Route a bracketed-paste payload to whichever screen wants it. Screens
+    /// without text input ignore paste; screens with single-line inputs
+    /// collapse newlines so a multi-line paste doesn't break the form.
+    fn handle_paste(&mut self, text: String) {
+        match &mut self.screen {
+            Screen::Analysis(a) => a.on_paste(&text),
+            Screen::ConfigImport(ci) => ci.on_paste(&text),
             _ => {}
         }
     }
@@ -392,6 +422,37 @@ impl App {
                         .unwrap_or_else(|| self.cloud_provider.clone());
                     self.initiate_upload(session, scope, provider);
                 }
+                DetailAction::Analyze(path) => {
+                    let session = d.session();
+                    let session_id = session.id.unwrap_or(0);
+                    let package_name = session.package_name.clone();
+                    let tx = self.require_tx();
+                    self.screen = Screen::Analysis(AnalysisScreen::new(
+                        self.db.clone(),
+                        self.paths.clone(),
+                        path,
+                        session_id,
+                        tx,
+                        package_name,
+                    ));
+                }
+                DetailAction::Diff { left, right } => {
+                    let session = d.session();
+                    let session_id = session.id.unwrap_or(0);
+                    let package_name = session.package_name.clone();
+                    let tx = self.require_tx();
+                    self.screen = Screen::Diff(DiffScreen::new(
+                        self.db.clone(),
+                        self.paths.clone(),
+                        session_id,
+                        package_name,
+                        left.0,
+                        left.1,
+                        right.0,
+                        right.1,
+                        tx,
+                    ));
+                }
                 DetailAction::None => {}
             },
             Screen::Capture(c) => match c.on_key(key) {
@@ -400,6 +461,42 @@ impl App {
                     self.return_to_detail(Some(session_id));
                 }
                 CaptureAction::None => {}
+            },
+            Screen::Diff(d) => match d.on_key(key) {
+                DiffAction::Back => {
+                    let session_id = d.session_id();
+                    self.return_to_detail(Some(session_id));
+                }
+                DiffAction::None => {}
+            },
+            Screen::Analysis(a) => match a.on_key(key) {
+                AnalysisAction::Back => {
+                    let session_id = a.session_id();
+                    self.return_to_detail(Some(session_id));
+                }
+                AnalysisAction::OpenInBrowser(path) => {
+                    // Reuse the session's startup commands if we can still
+                    // find the owning session in the DB; otherwise pass
+                    // empty.
+                    let cmds = self
+                        .db
+                        .list_sessions()
+                        .ok()
+                        .and_then(|list| {
+                            list.into_iter()
+                                .find(|s| s.id == Some(a.session_id()))
+                                .map(|s| s.config.startup_commands)
+                        })
+                        .unwrap_or_default();
+                    let outcome = self.open_trace(&path, &cmds);
+                    if let Screen::Analysis(a) = &mut self.screen {
+                        match outcome {
+                            Ok(_) => a.set_status("opened in browser".into()),
+                            Err(e) => a.set_error(format!("open failed: {e}")),
+                        }
+                    }
+                }
+                AnalysisAction::None => {}
             },
             Screen::ConfigEditor(e) => {
                 match e.on_key(key) {

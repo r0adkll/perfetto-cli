@@ -56,4 +56,16 @@ fn main() {
     for key in REQUIRED {
         println!("cargo:rerun-if-env-changed={key}");
     }
+
+    // Generate prost types for the vendored trace_processor.proto. Use the
+    // bundled `protoc` from `protoc-bin-vendored` so source builds don't need
+    // a system protobuf install.
+    println!("cargo:rerun-if-changed=proto/trace_processor.proto");
+    let protoc = protoc_bin_vendored::protoc_bin_path()
+        .expect("protoc-bin-vendored has no binary for this host");
+    // SAFETY: build script is single-threaded.
+    unsafe { std::env::set_var("PROTOC", protoc) };
+    prost_build::Config::new()
+        .compile_protos(&["proto/trace_processor.proto"], &["proto"])
+        .expect("failed to compile trace_processor.proto");
 }

@@ -13,7 +13,7 @@ anyhow = "1.0.102"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6.0", features = ["derive"] }
 cli-clipboard = "0.4.0"
-crossterm = { version = "0.29.0", features = ["event-stream"] }
+crossterm = { version = "0.29.0", features = ["event-stream", "bracketed-paste"] }
 directories = "6.0.0"
 futures = "0.3.32"
 ratatui = "0.30.0"
@@ -38,6 +38,14 @@ webbrowser = "1.2.0"
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio", "sso"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
+prost = "0.13"
+bytes = "1"
+
+[build-dependencies]
+prost-build = "0.13"
+# Ships a bundled `protoc` binary so building from source doesn't require a
+# system install. Selected at compile time for the host triple.
+protoc-bin-vendored = "3"
 
 # Release profile tuned for distributed binaries. `lto = "thin"` is the
 # sweet spot between binary size and link time, `codegen-units = 1` lets

@@ -63,6 +63,27 @@ impl<'a> ConfigImportScreen<'a> {
         }
     }
 
+    /// Handle a bracketed-paste payload. In Editing mode we drop it into the
+    /// textarea verbatim; in Naming mode the paste becomes a single-line
+    /// contribution with newlines collapsed to spaces so a multi-line paste
+    /// doesn't break the single-line name field.
+    pub fn on_paste(&mut self, text: &str) {
+        match &mut self.mode {
+            Mode::Editing => {
+                self.textarea.insert_str(text);
+            }
+            Mode::Naming { buffer } => {
+                for ch in text.chars() {
+                    if ch == '\n' || ch == '\r' {
+                        buffer.push(' ');
+                    } else {
+                        buffer.push(ch);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) -> ImportAction {
         if key.kind != KeyEventKind::Press {
             return ImportAction::None;

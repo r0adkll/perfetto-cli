@@ -15,6 +15,8 @@ under `~/.config/perfetto-cli/`:
   folders that survive DB loss.
 - `logs/` — rotating daily `tracing` logs. **Never write to stdout while the
   TUI is up**; that's what `tracing-appender` is for.
+- `bin/trace_processor_shell` — Perfetto's official analyzer, lazily
+  downloaded on first analysis. Pinned to a specific release and SHA-verified.
 
 ## Layout
 
@@ -39,9 +41,18 @@ src/
 │   ├── event.rs      # AppEvent enum + EventBus (key + tick + async results)
 │   ├── theme.rs      # color palette constants
 │   └── screens/      # one file per screen, each owns its own state
+│       ├── analysis/ # AnalysisScreen: Summary + SQL REPL tabs over trace_processor
+│       └── diff/     # DiffScreen: two-trace side-by-side comparison (reuses analysis worker)
+├── trace_processor/  # PerfettoSQL analysis client (see "Local trace analysis")
+│   ├── binary.rs     # pinned-version downloader + SHA-256 verify
+│   ├── client.rs     # TraceProcessor: spawn, /parse, /query, shutdown
+│   ├── http.rs       # reqwest proto helpers + concat-merge decoder
+│   ├── proto.rs      # prost-generated perfetto.protos (from proto/*.proto)
+│   └── query.rs      # Cell/Row/QueryResult + CellsBatch decoder
 ├── ui_server.rs      # tiny_http server for ui.perfetto.dev handoff
 ├── app.rs            # top-level state machine, Screen enum, key routing
-└── main.rs           # entry + tracing subscriber + db init
+├── main.rs           # entry + tracing subscriber + db init
+└── build.rs          # compile-time .env injection + prost-build for .proto
 ```
 
 ## Commands
@@ -93,6 +104,15 @@ cp ../../.env .
   still used for text-field rows in the wizard and status rows in the
   capture screen, only the header row uses `HEADER_HEIGHT`. Don't global-
   replace.
+- **Bracketed paste is enabled** in `tui::init()`
+  (`EnableBracketedPaste`). The event loop forwards paste events as
+  `AppEvent::Paste(String)`; `app.rs::handle_paste` routes them to the
+  active screen's `on_paste` method. Screens with `TextArea` inputs call
+  `TextArea::insert_str(text)` to apply the whole payload atomically —
+  don't try to synthesize paste as a stream of key events, that's exactly
+  the broken behaviour bracketed paste exists to fix. Single-line inputs
+  should collapse newlines to spaces (see
+  `config_import::ConfigImportScreen::on_paste` for the pattern).
 
 ## Key flows
 
@@ -128,6 +148,97 @@ before rebinding for the next trace. The server **must** return 404 for
 probes `/status` to detect a trace_processor RPC server, and a 200 there
 triggers a version handshake that fails.
 
+### Analysis screen (Summary + REPL)
+
+Reachable from `SessionDetail` via `a`. Lives under
+`tui/screens/analysis/` with four files: `mod.rs` (top-level screen, tab
+state machine, progress gauge), `worker.rs` (background tokio task that
+owns the `TraceProcessor`), `summary.rs` (opinionated tile grid + top-5
+slices panel), `repl.rs` (SQL input, in-memory history, scrollable result
+table).
+
+**Worker pattern, not direct ownership.** The screen holds a
+`UnboundedSender<WorkerRequest>`, never touches `TraceProcessor` itself.
+One `tokio::spawn`ed worker owns the client and serialises queries (which
+is what `trace_processor_shell` wants anyway — it's single-threaded).
+Drop-driven shutdown: when the screen is replaced, the sender drops, the
+worker's `rx.recv()` returns `None`, and `TraceProcessor::shutdown` runs
+before the task exits. `Cancel` is also fired in `AnalysisScreen::Drop`
+so an in-flight load bails immediately.
+
+**`spawn_worker` is event-routing-agnostic via a `wrap: F` closure.** The
+worker emits `AnalysisEvent`s but doesn't know which `AppEvent` variant
+carries them. The Analysis screen passes `|ev| AppEvent::Analysis(ev)`;
+the Diff screen passes `|ev| AppEvent::Diff { side, event: ev }` via
+`diff::worker::spawn_diff_worker`. Any new screen that wants a
+trace_processor pipeline should wrap `spawn_worker` the same way —
+don't fork the worker itself. The DiffScreen reuses `SummaryState`
+unchanged, one per side, driven by the same `on_cell` / `on_rows` path
+as Analysis.
+
+Summary queries are runtime-tolerant: the worker catches "no such table /
+module" errors and downgrades that tile to `MissingTable` (rendered as
+`—`) instead of poisoning the whole panel. This is how jank/startup
+metrics gracefully no-op on older Android traces.
+
+REPL input is a `ratatui_textarea::TextArea` (multi-line — queries often
+are). **Submit is `Ctrl+Enter` or `Alt+Enter`** — both wired to the same
+path because terminal modifier reporting varies; plain Enter inserts a
+newline. `Ctrl+U` and `Esc` clear the input.
+
+**Quick-keys are disabled when a text input has focus.** On the Analysis
+screen's REPL tab (`text_focused = Ready + Tab::Repl`), the single-char
+shortcuts `q` / `o` / `1` / `2` / `r` pass through to the textarea so
+they can appear in SQL verbatim. The `Ctrl+` chord versions
+(`Ctrl+Q`/`Ctrl+C` back, `Ctrl+O` open-in-UI) substitute, and `Tab` /
+`BackTab` still switch tabs because literal tabs in hand-typed SQL are
+uncommon. Any future screen that adds a text input should follow this
+pattern rather than fighting with single-char shortcuts — see
+`AnalysisScreen::on_key` for the template.
+
+History navigation: Up/Down cycle history only when the input is empty OR
+the user is already mid-recall (`recall_idx.is_some()`). Any keystroke
+other than the recall arrows clears the recall marker, after which
+Up/Down feed the textarea for cursor movement. Matches shell convention:
+Up-Up-Up cycles back, but once you type, arrows navigate the buffer.
+Result table scrolls on Shift+Up/Down and PageUp/PageDown.
+
+### Local trace analysis (PerfettoSQL)
+
+Queries `.pftrace` files via Google's official `trace_processor_shell`
+subprocess — the same strategy Perfetto's Python API uses. C++ FFI and WASM
+were rejected: cross-compile complexity for the first, Emscripten-bound
+browser dependency for the second.
+
+1. `binary::ensure_binary` downloads the pinned release from
+   `commondatastorage.googleapis.com/perfetto-luci-artifacts/<version>/<platform>/trace_processor_shell`,
+   verifies the SHA-256 against the vendored constant, `chmod 0o755`s it,
+   and renames into place atomically. Idempotent — returns fast if the binary
+   already exists at `~/.config/perfetto-cli/bin/`.
+2. `TraceProcessor::spawn` picks an ephemeral localhost port
+   (`TcpListener::bind("127.0.0.1:0")` → drop → hand to child), launches
+   `trace_processor_shell -D --http-port N` with `kill_on_drop(true)`,
+   drains stdout/stderr into `tracing` (last 64 stderr lines retained for
+   crash diagnostics), then polls `GET /status` every 100ms until
+   `StatusResult` decodes successfully. Retries spawn up to 3× for the
+   port-bind race.
+3. Trace load streams the file in 32 MB chunks to `POST /parse`, checking
+   `AppendTraceDataResult.error` per chunk, then `GET /notify_eof`. Never
+   `fs::read` the whole trace — captures are routinely hundreds of MB.
+4. `TraceProcessor::query(sql)` posts protobuf `QueryArgs` to `/query`. The
+   response may be several `QueryResult` messages concatenated on the wire;
+   `http::decode_concat` merges them using protobuf's repeated-field append
+   semantics (no manual framing needed — `prost::Message::merge` on the
+   whole slice does the right thing).
+5. `query::decode` walks each `CellsBatch`'s `cells: Vec<i32>` tag array,
+   popping values off the parallel typed arrays (`varint_cells`,
+   `float64_cells`, `blob_cells`, and the NUL-separated `string_cells`
+   buffer). Rows emit every `columns.len()` cells and may span multiple
+   batches.
+6. Lifecycle is **spawn-per-analysis**, not singleton. Each `TraceProcessor`
+   owns one subprocess bound to one loaded trace. Drop → `start_kill` via
+   `kill_on_drop`; explicit `shutdown()` waits up to 2s for clean exit.
+
 ## Non-obvious behaviors
 
 - **`capture::run` injects `session.package_name` into `config.atrace_apps`**
@@ -158,6 +269,33 @@ triggers a version handshake that fails.
   from the DB with a live `pm list packages -3` query for the highlighted
   online device. The suggestions panel is a focus target in the Tab cycle
   (`Name → Package → Suggestions → Device → Submit`).
+- **`trace_processor_shell` is version-pinned.** The URL and SHA-256 in
+  `binary.rs` are for a specific Perfetto release (`PINNED_VERSION`). To
+  bump: change `PINNED_VERSION`, update all five `PlatformArtifact`
+  entries (their URLs embed the version) and their SHA-256s — grab fresh
+  values from `https://get.perfetto.dev/trace_processor` (it's a Python
+  launcher script with a manifest of platform URLs + hashes).
+- **`proto/trace_processor.proto` is a minimal subset** of upstream. The
+  real file imports `descriptor.proto`, `metatrace_categories.proto`, and
+  `trace_summary/file.proto` for messages we don't use
+  (ComputeMetric/EnableMetatrace/TraceSummary/Summarizer). We keep the
+  legacy HTTP endpoints' messages only and skip those imports so the proto
+  is self-contained. If you need one of the omitted endpoints, either
+  vendor the dependent protos or hand-declare stubs — don't pull in the
+  whole upstream tree.
+- **Build uses `protoc-bin-vendored`** to supply `protoc` at build time, so
+  building from source never requires a system protobuf install. `build.rs`
+  sets `PROTOC` before calling `prost_build`.
+- **Don't use `jank_type != 'None'` to count janky frames.** Perfetto's
+  `actual_frame_timeline_slice.jank_type` records internal classifications
+  (`"Prediction Error"`, `"Buffer Stuffing"`, …) for almost every frame —
+  real traces come out 90%+ "janky" by that predicate, which is nonsense.
+  The correct signal is `on_time_finish = 0` (frame missed its deadline).
+  See `summary::jank_count_sql` / `frame_total_sql` for the canonical
+  shape: both scope via `JOIN process p ON aft.upid = p.upid WHERE p.name =
+  '<pkg>'` so system-process frames (SurfaceFlinger, system_ui, launcher)
+  don't drown the target app's numbers. Any future frame-metric query
+  should follow the same two rules.
 
 ## Testing
 
@@ -172,6 +310,17 @@ Unit tests live in `#[cfg(test)]` modules at the bottom of each source file
 - `session::tests` — `slugify` edge cases.
 - `tui::text_input::tests` — every edit shortcut + word-boundary cases for
   whitespace, `-`, and `_`.
+- `trace_processor::query::tests` — CellsBatch decoder: every cell kind,
+  multi-row single-batch, row-spans-batch-boundary, empty result, error
+  field, mid-row truncation detection.
+- `tui::screens::analysis::{worker,summary,repl}::tests` — missing-table
+  error-message detection, summary-key enum exhaustiveness, duration
+  formatting units, REPL submit/empty/history-recall/scroll behaviours.
+- `trace_processor::client::smoke::load_and_query_real_trace` — **ignored
+  by default** end-to-end integration: downloads `trace_processor_shell`,
+  spawns it, loads a real trace, runs two queries. Run with
+  `PERFETTO_SMOKE_TRACE=/abs/path/trace.pftrace cargo test --release
+  trace_processor::client::smoke -- --ignored --nocapture`.
 
 When adding new parser/helper logic, add tests in the same file. UI
 rendering is not tested.

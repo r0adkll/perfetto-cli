@@ -7,6 +7,7 @@ mod import;
 mod maintenance;
 mod perfetto;
 mod session;
+mod trace_processor;
 mod tui;
 mod ui_server;
 

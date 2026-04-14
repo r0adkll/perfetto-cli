@@ -1,0 +1,79 @@
+// Minimal subset of Perfetto's trace_processor.proto covering only the messages
+// perfetto-cli exchanges with `trace_processor_shell -D --http-port N`.
+//
+// Upstream:
+//   https://raw.githubusercontent.com/google/perfetto/main/protos/perfetto/trace_processor/trace_processor.proto
+// Vendored for the legacy HTTP endpoints:
+//   GET  /status         -> StatusResult
+//   POST /parse          (raw trace bytes) -> AppendTraceDataResult
+//   GET  /notify_eof     -> (empty)
+//   POST /query          QueryArgs -> QueryResult (one or more batches)
+//
+// Upstream pulls in descriptor.proto / metatrace_categories.proto / trace_summary/file.proto
+// for messages (ComputeMetric, EnableMetatrace, TraceSummary, Summarizer) we don't use.
+// Those are intentionally omitted here so the vendored file is self-contained.
+//
+// Copyright upstream (The Android Open Source Project), Apache-2.0.
+
+syntax = "proto2";
+
+package perfetto.protos;
+
+message AppendTraceDataResult {
+  optional int64 total_bytes_parsed = 1;
+  optional string error = 2;
+}
+
+message QueryArgs {
+  optional string sql_query = 1;
+  reserved 2; // was time_queued_ns
+  optional string tag = 3;
+}
+
+// Output for the /query endpoint.
+// Scanning order is row -> column: for 3 columns and 2 rows the cells are
+// emitted as R0C0, R0C1, R0C2, R1C0, R1C1, R1C2.
+message QueryResult {
+  repeated string column_names = 1;
+  optional string error = 2;
+
+  message CellsBatch {
+    enum CellType {
+      CELL_INVALID = 0;
+      CELL_NULL = 1;
+      CELL_VARINT = 2;
+      CELL_FLOAT64 = 3;
+      CELL_STRING = 4;
+      CELL_BLOB = 5;
+    }
+    repeated CellType cells = 1 [packed = true];
+
+    repeated int64 varint_cells = 2 [packed = true];
+    repeated double float64_cells = 3 [packed = true];
+    repeated bytes blob_cells = 4;
+
+    // String cells are concatenated in a single NUL-separated buffer.
+    optional string string_cells = 5;
+
+    optional bool is_last_batch = 6;
+    reserved 7;
+  }
+  repeated CellsBatch batch = 3;
+
+  optional uint32 statement_count = 4;
+  optional uint32 statement_with_output_count = 5;
+  optional string last_statement_sql = 6;
+  optional double elapsed_time_ms = 7;
+}
+
+// Input for /status (legacy HTTP endpoint takes no body, but keep the symbol
+// so callers can use it as a typed placeholder if desired).
+message StatusArgs {}
+
+// Output for /status.
+message StatusResult {
+  optional string loaded_trace_name = 1;
+  optional string human_readable_version = 2;
+  optional int32 api_version = 3;
+  optional string version_code = 4;
+}
