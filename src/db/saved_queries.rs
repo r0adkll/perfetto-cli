@@ -9,18 +9,15 @@
 //! DAO method is here so a future management screen has a ready API.
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use rusqlite::params;
 
 use super::Database;
 
 #[derive(Debug, Clone)]
 pub struct SavedQuery {
-    pub id: i64,
-    pub package_name: String,
     pub name: String,
     pub sql: String,
-    pub created_at: DateTime<Utc>,
 }
 
 impl Database {
@@ -55,35 +52,18 @@ impl Database {
     pub fn list_saved_queries(&self, package_name: &str) -> Result<Vec<SavedQuery>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, package_name, name, sql, created_at \
+            "SELECT name, sql \
              FROM saved_queries \
              WHERE package_name = ?1 \
              ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map(params![package_name], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-            ))
+            Ok(SavedQuery {
+                name: row.get(0)?,
+                sql: row.get(1)?,
+            })
         })?;
-        let mut out = Vec::new();
-        for r in rows {
-            let (id, package_name, name, sql, created_at) = r?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            out.push(SavedQuery {
-                id,
-                package_name,
-                name,
-                sql,
-                created_at,
-            });
-        }
-        Ok(out)
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
     /// Remove one saved query by its `(package_name, name)` pair. Silently

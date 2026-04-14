@@ -90,10 +90,6 @@ struct MetricRunSummary {
 /// Current (most-recent) query result displayed in the middle pane.
 pub enum Current {
     Idle,
-    Running {
-        id: u64,
-        sql: String,
-    },
     Result {
         #[allow(dead_code)]
         sql: String,
@@ -242,15 +238,10 @@ impl ReplState {
     /// dispatch — that flows through `on_custom_result`).
     pub fn on_result(
         &mut self,
-        id: u64,
+        _id: u64,
         sql: String,
         result: Result<QueryResult, String>,
     ) {
-        if let Current::Running { id: current_id, .. } = &self.current {
-            if *current_id != id {
-                return;
-            }
-        }
         self.current = match result {
             Ok(data) => Current::Result { sql, data },
             Err(message) => Current::Error { sql, message },
@@ -272,11 +263,6 @@ impl ReplState {
 
     fn editor_text(&self) -> String {
         self.editor.lines().join("\n")
-    }
-
-    fn is_editor_empty(&self) -> bool {
-        let lines = self.editor.lines();
-        lines.is_empty() || (lines.len() == 1 && lines[0].is_empty())
     }
 
     // ── key handling ─────────────────────────────────────────────────────
@@ -733,13 +719,6 @@ impl ReplState {
             Current::Idle => {
                 let p = Paragraph::new("type PerfettoSQL and press Alt+Enter to run")
                     .block(block)
-                    .style(Style::default().fg(theme::dim()));
-                frame.render_widget(p, area);
-            }
-            Current::Running { sql, .. } => {
-                let p = Paragraph::new(format!("running: {}", truncate(sql, 200)))
-                    .block(block)
-                    .wrap(Wrap { trim: true })
                     .style(Style::default().fg(theme::dim()));
                 frame.render_widget(p, area);
             }
@@ -1226,7 +1205,7 @@ mod tests {
         let mut r = repl_with(&[("m", "SELECT 1")]);
         let _ = r.on_key(alt(KeyCode::Char('l')));
         let _ = r.on_key(alt(KeyCode::Char('n')));
-        assert!(r.is_editor_empty());
+        assert!(r.editor_text().is_empty());
         assert!(r.editing.is_none());
     }
 
@@ -1464,7 +1443,7 @@ mod tests {
         assert!(r.suggested_save_name.is_some());
         let _ = r.on_key(alt(KeyCode::Char('n')));
         assert!(r.suggested_save_name.is_none());
-        assert!(r.is_editor_empty());
+        assert!(r.editor_text().is_empty());
     }
 
     #[test]
