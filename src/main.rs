@@ -3,25 +3,43 @@ mod app;
 mod cloud;
 mod config;
 mod db;
+mod maintenance;
 mod perfetto;
 mod session;
 mod tui;
 mod ui_server;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tracing_appender::non_blocking::WorkerGuard;
 
 #[derive(Parser)]
 #[command(name = "perfetto-cli", about = "TUI for managing Android perfetto trace sessions")]
-struct Cli {}
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Remove all cached sessions, traces, and the local database.
+    Clear {
+        /// Skip the confirmation prompt.
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
 
     let paths = config::Paths::resolve()?;
     paths.ensure()?;
+
+    if let Some(Command::Clear { yes }) = cli.command {
+        return maintenance::clear_cache(&paths, yes);
+    }
 
     let _log_guard = init_tracing(&paths)?;
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "perfetto-cli starting");

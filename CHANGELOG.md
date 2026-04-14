@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `perfetto-cli clear` subcommand — wipes the local SQLite database and sessions directory after a typed `yes` confirmation (`-y`/`--yes` skips the prompt); themes and logs are preserved
+
 ## [0.4.1] - 2026-04-13
 
 ### Changed
