@@ -29,6 +29,7 @@ impl Paths {
         std::fs::create_dir_all(self.sessions_dir())?;
         std::fs::create_dir_all(self.log_dir())?;
         std::fs::create_dir_all(self.themes_dir())?;
+        std::fs::create_dir_all(self.bin_dir())?;
         Ok(())
     }
 
@@ -46,6 +47,21 @@ impl Paths {
 
     pub fn themes_dir(&self) -> PathBuf {
         self.config_dir.join("themes")
+    }
+
+    /// Directory where we install helper binaries (e.g. `trace_processor_shell`).
+    pub fn bin_dir(&self) -> PathBuf {
+        self.config_dir.join("bin")
+    }
+
+    /// Absolute path to the `trace_processor_shell` binary we manage.
+    pub fn trace_processor_binary(&self) -> PathBuf {
+        let name = if cfg!(windows) {
+            "trace_processor_shell.exe"
+        } else {
+            "trace_processor_shell"
+        };
+        self.bin_dir().join(name)
     }
 }
 
