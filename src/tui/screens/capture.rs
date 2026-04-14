@@ -214,9 +214,11 @@ impl CaptureScreen {
         ]));
         frame.render_widget(header, rows[0]);
 
-        // Status strip: state + pid + elapsed/target
-        let elapsed_s = self.elapsed_ms() as f64 / 1000.0;
+        // Status strip: state + pid + elapsed/target. Cap elapsed at target so
+        // the pull/flush phase doesn't make the timer overshoot — the full
+        // duration is reported in the log on completion.
         let target_s = self.target_ms as f64 / 1000.0;
+        let elapsed_s = (self.elapsed_ms().min(self.target_ms)) as f64 / 1000.0;
         let pid_text = self
             .device_pid
             .map(|p| format!("  pid {p}"))
