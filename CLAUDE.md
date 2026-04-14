@@ -177,9 +177,14 @@ module" errors and downgrades that tile to `MissingTable` (rendered as
 metrics gracefully no-op on older Android traces.
 
 REPL input is a `ratatui_textarea::TextArea` (multi-line — queries often
-are). **Submit is `Ctrl+Enter` or `Alt+Enter`** — both wired to the same
-path because terminal modifier reporting varies; plain Enter inserts a
-newline. `Ctrl+U` and `Esc` clear the input.
+are). **Submit is `Alt+Enter` (primary) or `Ctrl+Enter`** — both wired to
+the same path, but Alt+Enter works on every macOS terminal. Ctrl+Enter
+only reaches us on terminals that forward the modifier via the kitty
+keyboard protocol / CSI u (Kitty, WezTerm, Ghostty, iTerm2 with the
+option enabled, Alacritty ≥ 0.15); default macOS Terminal.app collapses
+it to plain Enter. Document `Alt+Enter` first in every user-facing copy
+change. Plain Enter inserts a newline. `Ctrl+U` and `Esc` clear the
+input.
 
 **Quick-keys are disabled when a text input has focus.** On the Analysis
 screen's REPL tab (`text_focused = Ready + Tab::Repl`), the single-char

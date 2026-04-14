@@ -4,7 +4,7 @@
 //! Input is a multi-line [`ratatui_textarea::TextArea`] — queries are often
 //! multi-line (`INCLUDE PERFETTO MODULE`, CTEs, formatted SELECTs) and the
 //! single-line buffer we used to ship forced people to cram everything onto
-//! one line. **Submit is `Ctrl+Enter` or `Alt+Enter`** (both wired to the
+//! one line. **Submit is `Alt+Enter` or `Ctrl+Enter`** (both wired to the
 //! same path because terminal key-modifier reporting varies); plain Enter
 //! inserts a newline.
 //!
@@ -152,7 +152,7 @@ impl ReplState {
     /// has already intercepted global keys (q, Tab, 1/2, `o`). Inside the
     /// REPL we route:
     ///
-    /// - Submit chords (`Ctrl+Enter`, `Alt+Enter`) → run the query.
+    /// - Submit chords (`Alt+Enter`, `Ctrl+Enter`) → run the query.
     /// - `Ctrl+U` → clear the input.
     /// - Shift+↑/↓, PageUp/PageDown → scroll the result table.
     /// - Plain ↑/↓ when the input is empty → recall history.
@@ -168,9 +168,12 @@ impl ReplState {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-        // Submit: Ctrl+Enter or Alt+Enter. Both map to the same action so
-        // users on any terminal (including those that can't distinguish
-        // Ctrl+Enter from plain Enter) have a working submit chord.
+        // Submit: Alt+Enter (primary — works on every macOS terminal) or
+        // Ctrl+Enter (only fires on terminals that forward Ctrl with Enter
+        // via the kitty keyboard protocol / CSI u — Kitty, WezTerm,
+        // Ghostty, iTerm2 with the option on, Alacritty ≥ 0.15). Default
+        // macOS Terminal.app collapses Ctrl+Enter to plain Enter, so we
+        // always keep Alt+Enter as the documented chord.
         if matches!(key.code, KeyCode::Enter) && (ctrl || alt) {
             let trimmed = self.current_sql().trim().to_string();
             if trimmed.is_empty() {
@@ -408,7 +411,7 @@ impl ReplState {
             .title(Span::styled(" Result ", Style::default().fg(theme::dim())));
         match &self.current {
             Current::Idle => {
-                let p = Paragraph::new("type PerfettoSQL and press Ctrl+Enter to run")
+                let p = Paragraph::new("type PerfettoSQL and press Alt+Enter to run")
                     .block(block)
                     .style(Style::default().fg(theme::dim()));
                 frame.render_widget(p, area);
@@ -529,7 +532,7 @@ fn configure_editor(ta: &mut TextArea<'static>) {
         Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(
-                " SQL · Ctrl+Enter to run ",
+                " SQL · Alt+Enter to run ",
                 Style::default().fg(theme::dim()),
             )),
     );

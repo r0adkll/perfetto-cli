@@ -500,7 +500,7 @@ impl AnalysisScreen {
             ],
             (State::Ready { .. }, Tab::Repl) => &[
                 "Tab switch pane",
-                "Ctrl+Enter run",
+                "Alt+Enter run",
                 "↑/↓ history (empty)",
                 "Shift+↑/↓ scroll",
                 "Ctrl+O open in UI",
