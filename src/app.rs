@@ -383,10 +383,11 @@ impl App {
                     );
                     self.screen = Screen::ConfigEditor(editor);
                 }
-                DetailAction::Capture => {
+                DetailAction::Capture(custom_filename) => {
                     let session = d.session().clone();
                     let tx = self.require_tx();
-                    self.screen = Screen::Capture(CaptureScreen::new(&session, tx));
+                    self.screen =
+                        Screen::Capture(CaptureScreen::new(&session, custom_filename, tx));
                 }
                 DetailAction::OpenTrace(path) => {
                     let cmds = d.session().config.startup_commands.clone();

@@ -36,7 +36,11 @@ pub enum CaptureAction {
 }
 
 impl CaptureScreen {
-    pub fn new(session: &Session, app_tx: UnboundedSender<AppEvent>) -> Self {
+    pub fn new(
+        session: &Session,
+        custom_filename: Option<String>,
+        app_tx: UnboundedSender<AppEvent>,
+    ) -> Self {
         let session_id = session.id.unwrap_or(0);
         let session_name = session.name.clone();
         let target_ms = session.config.duration_ms as u64;
@@ -65,6 +69,7 @@ impl CaptureScreen {
             device_serial,
             package_name: session.package_name.clone(),
             config: session.config.clone(),
+            custom_filename,
         };
 
         let (cap_tx, mut cap_rx) = mpsc::unbounded_channel::<CaptureEvent>();

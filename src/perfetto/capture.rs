@@ -58,6 +58,11 @@ pub struct CaptureRequest {
     pub device_serial: String,
     pub package_name: String,
     pub config: TraceConfig,
+    /// User-supplied trace filename stem (no extension). When `Some`, the
+    /// pulled trace is named `<stem>.pftrace` instead of the timestamped
+    /// default; on collision the engine appends `-2`, `-3`, … to keep the
+    /// existing files intact.
+    pub custom_filename: Option<String>,
 }
 
 /// Events emitted by the capture engine during a run.
@@ -107,6 +112,7 @@ pub async fn run(
         device_serial,
         package_name,
         mut config,
+        custom_filename,
         ..
     } = request;
 
@@ -269,10 +275,14 @@ pub async fn run(
 
     let traces_dir = session_folder.join("traces");
     std::fs::create_dir_all(&traces_dir).context("create traces dir")?;
-    // `YYYY-MM-DD_HH-MM-SS` — readable at a glance, filesystem-safe, still
-    // sorts lexicographically in capture order.
-    let local_filename = format!("{}.pftrace", Utc::now().format("%Y-%m-%d_%H-%M-%S"));
-    let local_path = traces_dir.join(&local_filename);
+    // Default name: `YYYY-MM-DD_HH-MM-SS` — readable at a glance, filesystem-
+    // safe, still sorts lexicographically in capture order. A user-supplied
+    // stem overrides it; collisions get a `-2`, `-3`, … suffix instead of
+    // overwriting an existing file.
+    let local_path = match custom_filename.as_deref() {
+        Some(stem) => unique_trace_path(&traces_dir, stem),
+        None => traces_dir.join(format!("{}.pftrace", Utc::now().format("%Y-%m-%d_%H-%M-%S"))),
+    };
     log(&tx, LogLevel::Info, "Pulling trace from device".into());
     adb::run(
         &device_serial,
@@ -444,6 +454,24 @@ fn log(tx: &UnboundedSender<CaptureEvent>, level: LogLevel, message: String) {
     let _ = tx.send(CaptureEvent::Log(LogEntry { level, message }));
 }
 
+/// Resolve `<traces_dir>/<stem>.pftrace`, appending `-2`, `-3`, … until the
+/// path is free. Mirrors `Session::unique_folder_path` so user-named captures
+/// never silently overwrite an existing trace.
+fn unique_trace_path(traces_dir: &std::path::Path, stem: &str) -> PathBuf {
+    let first = traces_dir.join(format!("{stem}.pftrace"));
+    if !first.exists() {
+        return first;
+    }
+    let mut n: u32 = 2;
+    loop {
+        let candidate = traces_dir.join(format!("{stem}-{n}.pftrace"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,5 +506,38 @@ mod tests {
             build_component("com.example", "com.example.ui.MainActivity"),
             "com.example/com.example.ui.MainActivity"
         );
+    }
+
+    #[test]
+    fn unique_trace_path_uses_stem_when_free() {
+        let dir = std::env::temp_dir().join(format!(
+            "perfetto-cli-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = unique_trace_path(&dir, "my-capture");
+        assert_eq!(path, dir.join("my-capture.pftrace"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unique_trace_path_appends_suffix_on_collision() {
+        let dir = std::env::temp_dir().join(format!(
+            "perfetto-cli-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("my-capture.pftrace"), b"").unwrap();
+        let path = unique_trace_path(&dir, "my-capture");
+        assert_eq!(path, dir.join("my-capture-2.pftrace"));
+
+        std::fs::write(dir.join("my-capture-2.pftrace"), b"").unwrap();
+        let path = unique_trace_path(&dir, "my-capture");
+        assert_eq!(path, dir.join("my-capture-3.pftrace"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

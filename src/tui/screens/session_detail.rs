@@ -59,6 +59,10 @@ enum Mode {
     Browse,
     Rename { buffer: String },
     EditTags { buffer: String },
+    /// Prompt for a trace filename before launching the capture. Submit
+    /// dispatches `DetailAction::Capture(Some(name))`; an empty name on
+    /// submit falls back to the default timestamp filename.
+    PromptCaptureName { buffer: String },
     ConfirmDelete,
     UploadPickProvider {
         scope: UploadScope,
@@ -88,7 +92,9 @@ pub enum DetailAction {
     None,
     Back,
     EditConfig,
-    Capture,
+    /// Start a capture. `Some(name)` uses the user-supplied filename stem
+    /// (no extension); `None` falls back to the default timestamped filename.
+    Capture(Option<String>),
     OpenTrace(PathBuf),
     OpenFolder(PathBuf),
     Upload(UploadScope, String), // (scope, provider_id)
@@ -193,6 +199,9 @@ impl SessionDetailScreen {
             Mode::EditTags { .. } => {
                 return self.handle_tags_key(db, key);
             }
+            Mode::PromptCaptureName { .. } => {
+                return self.handle_capture_name_key(key);
+            }
             Mode::ConfirmDelete => {
                 return self.handle_confirm_delete(db, key);
             }
@@ -214,7 +223,13 @@ impl SessionDetailScreen {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => DetailAction::Back,
             KeyCode::Char('e') => DetailAction::EditConfig,
-            KeyCode::Char('c') => DetailAction::Capture,
+            KeyCode::Char('c') => DetailAction::Capture(None),
+            KeyCode::Char('C') => {
+                self.mode = Mode::PromptCaptureName {
+                    buffer: String::new(),
+                };
+                DetailAction::None
+            }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.move_selection(1);
                 DetailAction::None
@@ -396,6 +411,37 @@ impl SessionDetailScreen {
             }
         }
         DetailAction::None
+    }
+
+    fn handle_capture_name_key(&mut self, key: KeyEvent) -> DetailAction {
+        let Mode::PromptCaptureName { mut buffer } =
+            std::mem::replace(&mut self.mode, Mode::Browse)
+        else {
+            return DetailAction::None;
+        };
+        // Translate spaces to dashes so the on-disk filename stays shell-
+        // friendly — same convention as the rename flow.
+        let mut key = key;
+        if matches!(key.code, KeyCode::Char(' ')) {
+            key.code = KeyCode::Char('-');
+        }
+        match text_input::apply(&mut buffer, &key) {
+            TextAction::Cancel => DetailAction::None,
+            TextAction::Submit => {
+                let stem = strip_trace_ext(buffer.trim()).trim().to_string();
+                if stem.is_empty() {
+                    // Empty submit → fall back to the timestamped default
+                    // rather than capturing into a `.pftrace` with no stem.
+                    DetailAction::Capture(None)
+                } else {
+                    DetailAction::Capture(Some(stem))
+                }
+            }
+            TextAction::Edited | TextAction::Ignored => {
+                self.mode = Mode::PromptCaptureName { buffer };
+                DetailAction::None
+            }
+        }
     }
 
     fn handle_confirm_delete(&mut self, db: &Database, key: KeyEvent) -> DetailAction {
@@ -981,6 +1027,16 @@ impl SessionDetailScreen {
                     theme::hint(),
                 ),
             ]),
+            Mode::PromptCaptureName { buffer } => Line::from(vec![
+                Span::styled(" capture name › ", theme::title()),
+                Span::raw(buffer.clone()),
+                Span::styled("█", Style::default().fg(theme::accent())),
+                Span::styled(TRACE_EXT, theme::hint()),
+                Span::styled(
+                    "   [Enter] start  [Esc] cancel  (empty = timestamp)",
+                    theme::hint(),
+                ),
+            ]),
             Mode::ConfirmDelete => {
                 let name = self
                     .selected_trace()
@@ -1117,6 +1173,8 @@ impl SessionDetailScreen {
                     let mut spans = vec![
                         Span::styled(" [c]", theme::title()),
                         Span::raw(" capture  "),
+                        Span::styled("[C]", theme::title()),
+                        Span::raw(" capture as…  "),
                         Span::styled("[o]", theme::title()),
                         Span::raw(" open  "),
                         Span::styled("[a]", theme::title()),
