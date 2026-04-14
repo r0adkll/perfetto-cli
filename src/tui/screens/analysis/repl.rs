@@ -647,12 +647,21 @@ impl ReplState {
             self.saved.len(),
             self.package_name
         );
-        let hints = "  [Alt+Up/Dn] cycle · [Alt+L] load · [Alt+R] rename · [Alt+D] delete ";
+        let hints = chord_hint_line(
+            "  ",
+            &[
+                ("[Alt+Up/Dn]", " cycle"),
+                ("[Alt+L]", " load"),
+                ("[Alt+R]", " rename"),
+                ("[Alt+D]", " delete"),
+            ],
+            " ",
+        );
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(dim)
             .title(Span::styled(title_text, dim))
-            .title_bottom(Line::from(Span::styled(hints, dim)));
+            .title_bottom(hints);
 
         if self.saved.is_empty() {
             let p = Paragraph::new(Line::from(Span::styled(
@@ -819,19 +828,26 @@ impl ReplState {
     }
 
     fn render_editor(&self, frame: &mut Frame, area: Rect) {
-        let dim = Style::default().fg(theme::dim());
         let dirty = self.is_dirty();
-        let title_text = match (&self.editing, dirty) {
-            (None, _) => {
-                " SQL · new metric · [Alt+Enter] run · [Alt+S] save · [Alt+I] library ".to_string()
-            }
-            (Some(name), false) => format!(
-                " SQL · editing {name} · [Alt+Enter] run · [Alt+S] update · [Alt+I] library "
-            ),
-            (Some(name), true) => format!(
-                " SQL · editing {name} * · [Alt+Enter] run · [Alt+S] update · [Alt+I] library "
-            ),
+        let save_verb = if self.editing.is_some() {
+            " update"
+        } else {
+            " save"
         };
+        let prefix = match (&self.editing, dirty) {
+            (None, _) => " SQL · new metric · ".to_string(),
+            (Some(name), false) => format!(" SQL · editing {name} · "),
+            (Some(name), true) => format!(" SQL · editing {name} * · "),
+        };
+        let title_line = chord_hint_line(
+            &prefix,
+            &[
+                ("[Alt+Enter]", " run"),
+                ("[Alt+S]", save_verb),
+                ("[Alt+I]", " library"),
+            ],
+            " ",
+        );
         // Re-style each render — the inner block title lives on TextArea
         // config, so we configure a fresh borrowed version each frame.
         // ratatui_textarea's `set_block` replaces the entire block.
@@ -839,7 +855,7 @@ impl ReplState {
         editor_view.set_block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(Span::styled(title_text, dim)),
+                .title(title_line),
         );
         editor_view.set_cursor_line_style(Style::default());
         editor_view.set_line_number_style(Style::default().fg(theme::dim()));
@@ -849,12 +865,14 @@ impl ReplState {
 
 fn render_name_prompt(frame: &mut Frame, area: Rect, title: &str, prompt: &str, buffer: &str) {
     let dim = Style::default().fg(theme::dim());
+    let title_line = chord_hint_line(
+        &format!(" {title} · "),
+        &[("[Enter]", " save"), ("[Esc]", " cancel")],
+        " ",
+    );
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(
-            format!(" {title} · Enter to save · Esc to cancel "),
-            dim,
-        ));
+        .title(title_line);
     let line = Line::from(vec![
         Span::styled(format!("  {prompt} › "), dim),
         Span::styled(
@@ -871,16 +889,15 @@ fn render_name_prompt(frame: &mut Frame, area: Rect, title: &str, prompt: &str, 
 
 fn render_library_picker(frame: &mut Frame, area: Rect, highlight: usize) {
     let dim = Style::default().fg(theme::dim());
+    let title_line = chord_hint_line(
+        &format!(" Library · {} queries · ", LIBRARY.len()),
+        &[("[Enter]", " load"), ("[Esc]", " cancel")],
+        " ",
+    );
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(dim)
-        .title(Span::styled(
-            format!(
-                " Library · {} queries · Enter to load · Esc to cancel ",
-                LIBRARY.len()
-            ),
-            dim,
-        ));
+        .title(title_line);
 
     // The picker sits in the editor slot (INPUT_HEIGHT rows). Show a
     // window of entries around the highlight so the highlight is always
@@ -1037,6 +1054,34 @@ fn truncate(s: &str, max_chars: usize) -> String {
         count += 1;
     }
     out
+}
+
+/// Build a title / title-bottom line with chord-highlighted action hints.
+///
+/// `prefix` and `suffix` render in `theme::dim()`; each `(chord, verb)`
+/// pair renders the chord in `theme::title()` (accent + bold, matching
+/// the app footer) and the verb in dim. Pairs are separated by ` · `.
+fn chord_hint_line(
+    prefix: &str,
+    pairs: &[(&'static str, &'static str)],
+    suffix: &str,
+) -> Line<'static> {
+    let dim = Style::default().fg(theme::dim());
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(pairs.len() * 3 + 2);
+    if !prefix.is_empty() {
+        spans.push(Span::styled(prefix.to_string(), dim));
+    }
+    for (i, (chord, verb)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", dim));
+        }
+        spans.push(Span::styled(*chord, theme::title()));
+        spans.push(Span::styled(*verb, dim));
+    }
+    if !suffix.is_empty() {
+        spans.push(Span::styled(suffix.to_string(), dim));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
