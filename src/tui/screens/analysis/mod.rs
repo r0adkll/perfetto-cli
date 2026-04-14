@@ -36,7 +36,7 @@ pub use worker::AnalysisEvent;
 
 use repl::{KeyOutcome as ReplOutcome, ReplState};
 use summary::SummaryState;
-use worker::{WorkerRequest, spawn_worker};
+use worker::{CustomQuery, WorkerRequest, spawn_worker};
 
 /// Action the screen asks the `App` router to perform. Everything else is
 /// handled internally.
@@ -179,14 +179,19 @@ impl AnalysisScreen {
             AnalysisEvent::LoadReady { version } => {
                 let captured_at = parse_captured_at_from_filename(&self.trace_path)
                     .unwrap_or_else(|| "—".into());
+                let custom_queries = self.load_custom_queries();
                 self.state = State::Ready {
                     version,
-                    summary: SummaryState::new(self.package_name.clone(), captured_at),
+                    summary: SummaryState::new(
+                        self.package_name.clone(),
+                        captured_at,
+                        custom_queries.clone(),
+                    ),
                     repl: ReplState::new(),
                 };
                 // Kick off the summary immediately so the default tab fills in.
                 if let Some(tx) = &self.worker_tx {
-                    let _ = tx.send(WorkerRequest::RunSummary);
+                    let _ = tx.send(WorkerRequest::RunSummary { custom_queries });
                 }
             }
             AnalysisEvent::LoadFailed(msg) => {
@@ -207,7 +212,28 @@ impl AnalysisScreen {
                     repl.on_result(id, sql, result);
                 }
             }
+            AnalysisEvent::CustomResult { name, result } => {
+                if let State::Ready { summary, .. } = &mut self.state {
+                    summary.on_custom_result(name, result);
+                }
+            }
         }
+    }
+
+    /// Read the current package's saved queries from the DB. Silent on
+    /// error (empty vec) because a dashboard-population failure
+    /// shouldn't block the trace load — the error would surface on
+    /// subsequent SQL submits anyway.
+    fn load_custom_queries(&self) -> Vec<CustomQuery> {
+        self.db
+            .list_saved_queries(&self.package_name)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|sq| CustomQuery {
+                name: sq.name,
+                sql: sq.sql,
+            })
+            .collect()
     }
 
     fn apply_progress(&mut self, p: LoadProgress) {
@@ -294,10 +320,11 @@ impl AnalysisScreen {
         match (&mut self.state, self.tab) {
             (State::Ready { .. }, Tab::Summary) => {
                 if key.code == KeyCode::Char('r') {
+                    let custom_queries = self.load_custom_queries();
                     if let State::Ready { summary, .. } = &mut self.state {
-                        summary.reset();
+                        summary.reset(custom_queries.clone());
                         if let Some(tx) = &self.worker_tx {
-                            let _ = tx.send(WorkerRequest::RunSummary);
+                            let _ = tx.send(WorkerRequest::RunSummary { custom_queries });
                         }
                         self.set_status("refreshing summary".into());
                     }
@@ -307,7 +334,15 @@ impl AnalysisScreen {
             (State::Ready { repl, .. }, Tab::Repl) => {
                 // REPL sees everything not intercepted above, including Esc
                 // (which clears the input buffer).
-                match repl.on_key(key) {
+                let outcome = repl.on_key(key);
+                // Surface any `:save` validation error from the REPL before
+                // processing the outcome, so the status line updates on the
+                // same tick.
+                let cmd_err = repl.take_command_error();
+                if let Some(err) = cmd_err {
+                    self.set_error(err);
+                }
+                match outcome {
                     ReplOutcome::Submit(sql) => {
                         let id = self.next_query_id;
                         self.next_query_id += 1;
@@ -316,6 +351,23 @@ impl AnalysisScreen {
                         }
                         if let Some(tx) = &self.worker_tx {
                             let _ = tx.send(WorkerRequest::RunQuery { id, sql });
+                        }
+                    }
+                    ReplOutcome::SaveQuery { name, sql } => {
+                        match self.db.upsert_saved_query(&self.package_name, &name, &sql) {
+                            Ok(_) => {
+                                self.set_status(format!("saved as `{name}`"));
+                                // Refresh the custom-metrics section so the new
+                                // query renders immediately.
+                                let custom_queries = self.load_custom_queries();
+                                if let State::Ready { summary, .. } = &mut self.state {
+                                    summary.reset_custom(custom_queries.clone());
+                                }
+                                if let Some(tx) = &self.worker_tx {
+                                    let _ = tx.send(WorkerRequest::RunSummary { custom_queries });
+                                }
+                            }
+                            Err(e) => self.set_error(format!("save failed: {e:#}")),
                         }
                     }
                     ReplOutcome::None => {}

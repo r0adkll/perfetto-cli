@@ -16,7 +16,6 @@ use crate::tui::Tui;
 use crate::tui::event::{self, AppEvent};
 use crate::tui::screens::analysis::{AnalysisAction, AnalysisScreen};
 use crate::tui::screens::capture::{CaptureAction, CaptureScreen};
-use crate::tui::screens::diff::{DiffAction, DiffScreen};
 use crate::tui::screens::cloud_providers::{CloudProvidersScreen, ProviderAction};
 use crate::tui::screens::command_set_editor::{CmdEditorAction, CommandSetEditorScreen};
 use crate::tui::screens::command_set_list::{CommandSetListAction, CommandSetListScreen};
@@ -60,7 +59,6 @@ enum Screen {
     ThemePicker(ThemePickerScreen),
     CloudProviders(CloudProvidersScreen),
     Analysis(AnalysisScreen),
-    Diff(DiffScreen),
 }
 
 pub struct App {
@@ -150,7 +148,6 @@ impl App {
             Screen::ThemePicker(_) => "Perfetto CLI — Theme".to_string(),
             Screen::CloudProviders(_) => "Perfetto CLI — Cloud Providers".to_string(),
             Screen::Analysis(_) => "Perfetto CLI — Analyze".to_string(),
-            Screen::Diff(_) => "Perfetto CLI — Diff".to_string(),
         };
         let _ = execute!(std::io::stdout(), SetTitle(title));
 
@@ -167,7 +164,6 @@ impl App {
             Screen::ThemePicker(tp) => tp.render(frame),
             Screen::CloudProviders(cp) => cp.render(frame),
             Screen::Analysis(a) => a.render(frame),
-            Screen::Diff(d) => d.render(frame),
         }
     }
 
@@ -297,11 +293,6 @@ impl App {
             AppEvent::Analysis(ev) => {
                 if let Screen::Analysis(a) = &mut self.screen {
                     a.on_event(ev);
-                }
-            }
-            AppEvent::Diff { side, event } => {
-                if let Screen::Diff(d) = &mut self.screen {
-                    d.on_event(side, event);
                 }
             }
             AppEvent::Paste(text) => self.handle_paste(text),
@@ -436,23 +427,6 @@ impl App {
                         package_name,
                     ));
                 }
-                DetailAction::Diff { left, right } => {
-                    let session = d.session();
-                    let session_id = session.id.unwrap_or(0);
-                    let package_name = session.package_name.clone();
-                    let tx = self.require_tx();
-                    self.screen = Screen::Diff(DiffScreen::new(
-                        self.db.clone(),
-                        self.paths.clone(),
-                        session_id,
-                        package_name,
-                        left.0,
-                        left.1,
-                        right.0,
-                        right.1,
-                        tx,
-                    ));
-                }
                 DetailAction::None => {}
             },
             Screen::Capture(c) => match c.on_key(key) {
@@ -461,13 +435,6 @@ impl App {
                     self.return_to_detail(Some(session_id));
                 }
                 CaptureAction::None => {}
-            },
-            Screen::Diff(d) => match d.on_key(key) {
-                DiffAction::Back => {
-                    let session_id = d.session_id();
-                    self.return_to_detail(Some(session_id));
-                }
-                DiffAction::None => {}
             },
             Screen::Analysis(a) => match a.on_key(key) {
                 AnalysisAction::Back => {

@@ -41,8 +41,7 @@ src/
 │   ├── event.rs      # AppEvent enum + EventBus (key + tick + async results)
 │   ├── theme.rs      # color palette constants
 │   └── screens/      # one file per screen, each owns its own state
-│       ├── analysis/ # AnalysisScreen: Summary + SQL REPL tabs over trace_processor
-│       └── diff/     # DiffScreen: two-trace side-by-side comparison (reuses analysis worker)
+│       └── analysis/ # AnalysisScreen: Summary + SQL REPL tabs over trace_processor
 ├── trace_processor/  # PerfettoSQL analysis client (see "Local trace analysis")
 │   ├── binary.rs     # pinned-version downloader + SHA-256 verify
 │   ├── client.rs     # TraceProcessor: spawn, /parse, /query, shutdown
@@ -168,13 +167,9 @@ so an in-flight load bails immediately.
 
 **`spawn_worker` is event-routing-agnostic via a `wrap: F` closure.** The
 worker emits `AnalysisEvent`s but doesn't know which `AppEvent` variant
-carries them. The Analysis screen passes `|ev| AppEvent::Analysis(ev)`;
-the Diff screen passes `|ev| AppEvent::Diff { side, event: ev }` via
-`diff::worker::spawn_diff_worker`. Any new screen that wants a
-trace_processor pipeline should wrap `spawn_worker` the same way —
-don't fork the worker itself. The DiffScreen reuses `SummaryState`
-unchanged, one per side, driven by the same `on_cell` / `on_rows` path
-as Analysis.
+carries them. The Analysis screen passes `|ev| AppEvent::Analysis(ev)`.
+Any new screen that wants a trace_processor pipeline should wrap
+`spawn_worker` the same way — don't fork the worker itself.
 
 Summary queries are runtime-tolerant: the worker catches "no such table /
 module" errors and downgrades that tile to `MissingTable` (rendered as

@@ -16,11 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Local trace analysis via PerfettoSQL** — press `[a]` on any trace in session detail to open the Analysis screen, which spawns a pinned-version `trace_processor_shell` (downloaded + SHA-256 verified on first use, cached under `~/.config/perfetto-cli/bin/`), parses the trace, and runs queries locally
 - **Summary tab** on the Analysis screen — diagnostic dashboard with context strip (package · device · captured-at · duration), four health tiles (jank rate, frame times p50/p95, peak RSS, main-thread busy %), conditional startup card, memory-over-time sparkline, main-thread hotspots, and a data-sources ribbon (`ftrace ✓ · frame timeline ✓ · startups ✗ · thread state ✓`)
 - **SQL REPL tab** — multi-line `ratatui_textarea` input; `Ctrl+Enter` or `Alt+Enter` runs the query; history recall via ↑/↓ when the input is empty; 500-row result table with Shift+↑/↓ and PageUp/PageDown scrolling
-- **Two-trace diff screen** — from session detail, press `[space]` to tag up to two traces (✓ prefix), `[D]` opens a side-by-side diff that runs Summary queries against both traces in parallel and shows every metric with a signed Δ column, colour-coded by improvement direction; sorts by `captured_at` so the older trace is always "left"
 - **Bracketed paste support** in all text inputs — multi-line pastes now land atomically in textareas instead of arriving as a stream of synthetic keystrokes; single-line inputs collapse newlines to spaces
+- **Saved queries (`:save <name>`)** — in the Analysis SQL REPL, run a query then submit `:save my_metric` to persist it for the current app's package. Saved queries auto-run on every Summary refresh and render as a compact "Custom metrics" section so each app can grow its own dashboard tailored to its instrumentation
 
 ### Changed
 - Analysis screen tab switching via `Tab`/`Shift-Tab`; digit shortcuts `1`/`2` only active when the SQL textarea doesn't have focus, so SQL content can contain those characters; `Ctrl+Q`/`Ctrl+C` exit and `Ctrl+O` opens in `ui.perfetto.dev` when text input is focused
+
+### Removed
+- **Two-trace diff screen** (pre-release) — single-sample comparison was too noisy and the 9-row canned metric set too generic to describe any specific app. Replaced by per-app saved queries (see Added). The `[space]` / `[D]` keybindings on session detail are gone
 
 ### Fixed
 - Saving a session config in the editor now returns to the session detail screen instead of the session list

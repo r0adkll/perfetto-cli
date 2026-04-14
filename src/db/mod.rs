@@ -1,6 +1,7 @@
 pub mod command_sets;
 pub mod configs;
 pub mod devices;
+pub mod saved_queries;
 pub mod sessions;
 pub mod traces;
 
@@ -86,5 +87,13 @@ impl Database {
 
     pub(crate) fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().expect("db mutex poisoned")
+    }
+
+    /// Test-only constructor: wrap an existing `Arc<Mutex<Connection>>`
+    /// (typically from `Connection::open_in_memory()`) so DAO tests can
+    /// exercise `impl Database` methods without hitting the disk.
+    #[cfg(test)]
+    pub(crate) fn from_connection(conn: Arc<Mutex<Connection>>) -> Self {
+        Self { conn }
     }
 }

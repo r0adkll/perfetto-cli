@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -54,9 +53,6 @@ pub struct SessionDetailScreen {
     /// reason).
     benchmarks: Option<Vec<Benchmark>>,
     benchmark_load_error: Option<String>,
-    /// Trace IDs tagged by the user for comparison (space-toggle, max 2).
-    /// Independent of `list_state.selected()`, which is the cursor.
-    selected_for_diff: HashSet<i64>,
 }
 
 enum Mode {
@@ -97,13 +93,6 @@ pub enum DetailAction {
     OpenFolder(PathBuf),
     Upload(UploadScope, String), // (scope, provider_id)
     Analyze(PathBuf),            // opens Analysis screen for the given trace
-    /// Opens the diff screen with the two selected traces. App resolves
-    /// the tuples to a DiffScreen; sort by captured_at so the older trace
-    /// is always "left".
-    Diff {
-        left: (PathBuf, String),  // (path, display name)
-        right: (PathBuf, String),
-    },
 }
 
 impl SessionDetailScreen {
@@ -124,7 +113,6 @@ impl SessionDetailScreen {
             cloud_provider_name: cloud_provider_name.to_string(),
             benchmarks,
             benchmark_load_error,
-            selected_for_diff: HashSet::new(),
         };
         screen.reload(db);
         screen
@@ -312,11 +300,6 @@ impl SessionDetailScreen {
                     DetailAction::None
                 }
             }
-            KeyCode::Char(' ') => {
-                self.toggle_selected_for_diff();
-                DetailAction::None
-            }
-            KeyCode::Char('D') => self.try_start_diff(),
             KeyCode::Char('d') => DetailAction::OpenFolder(self.session.folder_path.clone()),
             KeyCode::Char('[') => {
                 self.preview_scroll = self.preview_scroll.saturating_sub(1);
@@ -662,67 +645,6 @@ impl SessionDetailScreen {
         self.traces.get(idx)
     }
 
-    /// Toggle diff-selection on the currently-highlighted trace. Capped at
-    /// two — adding a third is rejected with a status message, since the
-    /// diff screen expects exactly two traces.
-    fn toggle_selected_for_diff(&mut self) {
-        let Some(t) = self.selected_trace() else { return };
-        let id = t.id;
-        if self.selected_for_diff.contains(&id) {
-            self.selected_for_diff.remove(&id);
-            self.set_status(format!(
-                "diff selection: {}/2",
-                self.selected_for_diff.len()
-            ));
-        } else if self.selected_for_diff.len() < 2 {
-            self.selected_for_diff.insert(id);
-            self.set_status(format!(
-                "diff selection: {}/2{}",
-                self.selected_for_diff.len(),
-                if self.selected_for_diff.len() == 2 {
-                    " · press D to compare"
-                } else {
-                    ""
-                }
-            ));
-        } else {
-            self.set_status("already 2 traces selected — space to unselect".into());
-        }
-    }
-
-    /// Resolve the two selected trace IDs into a `DetailAction::Diff`. Sort
-    /// by `captured_at` so the chronologically earlier trace is always
-    /// "left" regardless of selection order. Status messages guide the
-    /// user if they hit `D` without a valid pair selected.
-    fn try_start_diff(&mut self) -> DetailAction {
-        if self.selected_for_diff.len() != 2 {
-            self.set_status(format!(
-                "select 2 traces with space (you have {})",
-                self.selected_for_diff.len()
-            ));
-            return DetailAction::None;
-        }
-        let ids: Vec<i64> = self.selected_for_diff.iter().copied().collect();
-        let a = self.traces.iter().find(|t| t.id == ids[0]).cloned();
-        let b = self.traces.iter().find(|t| t.id == ids[1]).cloned();
-        let (a, b) = match (a, b) {
-            (Some(a), Some(b)) => (a, b),
-            _ => {
-                self.set_error("could not resolve selected traces".into());
-                return DetailAction::None;
-            }
-        };
-        let (older, newer) = if a.captured_at <= b.captured_at {
-            (a, b)
-        } else {
-            (b, a)
-        };
-        DetailAction::Diff {
-            left: (older.file_path.clone(), diff_display_name(&older)),
-            right: (newer.file_path.clone(), diff_display_name(&newer)),
-        }
-    }
-
     pub fn session(&self) -> &Session {
         &self.session
     }
@@ -996,24 +918,8 @@ impl SessionDetailScreen {
                         .duration_ms
                         .map(|ms| format!("{:.1}s", ms as f64 / 1000.0))
                         .unwrap_or_else(|| "—".into());
-                    // Diff-selection marker lives before the label; the
-                    // `▶ ` cursor prefix is rendered by `highlight_symbol`
-                    // and occupies the first 2 cells, so we match that
-                    // width (2 cells) whether or not the trace is
-                    // selected — `✓ ` when selected, `  ` otherwise —
-                    // to keep the column alignment stable.
-                    let diff_marker = if self.selected_for_diff.contains(&t.id) {
-                        Span::styled(
-                            "✓ ",
-                            Style::default()
-                                .fg(theme::accent())
-                                .add_modifier(Modifier::BOLD),
-                        )
-                    } else {
-                        Span::raw("  ")
-                    };
                     let mut spans = vec![
-                        diff_marker,
+                        Span::raw("  "),
                         Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
                         Span::raw("  "),
                         Span::styled(when, theme::hint()),
@@ -1199,7 +1105,6 @@ impl SessionDetailScreen {
                     let has_link = self
                         .selected_trace()
                         .is_some_and(|t| !t.uploads.is_empty());
-                    let diff_ready = self.selected_for_diff.len() == 2;
                     let mut spans = vec![
                         Span::styled(" [c]", theme::title()),
                         Span::raw(" capture  "),
@@ -1207,19 +1112,6 @@ impl SessionDetailScreen {
                         Span::raw(" open  "),
                         Span::styled("[a]", theme::title()),
                         Span::raw(" analyze  "),
-                        Span::styled("[space]", theme::title()),
-                        Span::raw(" select  "),
-                        Span::styled(
-                            "[D]",
-                            if diff_ready {
-                                Style::default()
-                                    .fg(theme::accent())
-                                    .add_modifier(Modifier::BOLD)
-                            } else {
-                                theme::title()
-                            },
-                        ),
-                        Span::raw(" diff  "),
                         Span::styled("[u]", theme::title()),
                         Span::raw(" upload  "),
                     ];
@@ -1255,16 +1147,6 @@ fn file_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
-}
-
-/// Pick a human display name for a trace used as one side of a diff.
-/// Prefers the user's label; otherwise falls back to the trace filename
-/// with the `.pftrace` extension stripped.
-fn diff_display_name(trace: &TraceRecord) -> String {
-    trace
-        .label
-        .clone()
-        .unwrap_or_else(|| strip_trace_ext(&file_name(&trace.file_path)).to_string())
 }
 
 /// Case-insensitively strip the trailing `.pftrace` extension, if present.

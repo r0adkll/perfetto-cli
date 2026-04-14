@@ -21,7 +21,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row as TableRow, Sparkline, Table, Wrap};
 
-use crate::trace_processor::{Cell, Row};
+use crate::trace_processor::{Cell, QueryResult, Row};
 use crate::tui::theme;
 
 use super::worker::{SummaryCellOutcome, SummaryRowsOutcome};
@@ -339,10 +339,36 @@ pub struct SummaryState {
     cells: HashMap<SummaryKey, CellState>,
     package_name: String,
     captured_at: String,
+    custom: CustomMetricsState,
+}
+
+/// Per-app saved queries plus their most recent result state. Mirrors the
+/// canned-metric `CellState`/`cells` pattern but keyed by user-provided
+/// names instead of an enum.
+#[derive(Debug, Default)]
+pub struct CustomMetricsState {
+    /// Ordered list of queries to dispatch on each `RunSummary`. Source
+    /// of truth is the DB; this is a per-run snapshot taken by the
+    /// screen and handed in at construction / reset.
+    queries: Vec<super::worker::CustomQuery>,
+    /// Most recent result per query name. Pending until the first
+    /// `CustomResult` event for a given name arrives.
+    results: HashMap<String, CustomResultState>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CustomResultState {
+    Pending,
+    Done(QueryResult),
+    Error(String),
 }
 
 impl SummaryState {
-    pub fn new(package_name: String, captured_at: String) -> Self {
+    pub fn new(
+        package_name: String,
+        captured_at: String,
+        custom_queries: Vec<super::worker::CustomQuery>,
+    ) -> Self {
         let ctx = SummaryContext {
             package_name: package_name.clone(),
         };
@@ -350,37 +376,39 @@ impl SummaryState {
         for sq in SummaryKey::all_queries(&ctx) {
             cells.insert(sq.key, CellState::Pending);
         }
+        let custom = CustomMetricsState::new(custom_queries);
         Self {
             cells,
             package_name,
             captured_at,
+            custom,
         }
     }
 
-    /// Reset every cell back to Pending so the worker's next `RunSummary`
-    /// repopulates it.
-    pub fn reset(&mut self) {
+    /// Reset every canned cell back to Pending and replace the custom-query
+    /// list with a fresh snapshot from the caller. The custom snapshot is
+    /// passed in (not re-fetched) so the screen controls when DB reads
+    /// happen — keeps this struct DB-free.
+    pub fn reset(&mut self, custom_queries: Vec<super::worker::CustomQuery>) {
         let ctx = SummaryContext {
             package_name: self.package_name.clone(),
         };
         for sq in SummaryKey::all_queries(&ctx) {
             self.cells.insert(sq.key, CellState::Pending);
         }
+        self.custom = CustomMetricsState::new(custom_queries);
     }
 
-    /// Read-only access to the most recent state for a given metric.
-    /// Used by the diff screen to compare two `SummaryState`s cell-by-cell.
-    pub(crate) fn cell(&self, key: SummaryKey) -> Option<&CellState> {
-        self.cells.get(&key)
+    pub fn on_custom_result(&mut self, name: String, result: Result<QueryResult, String>) {
+        self.custom.on_result(name, result);
     }
 
-    #[allow(dead_code)] // used by future diff expansions (pkg-awareness)
-    pub(crate) fn package_name(&self) -> &str {
-        &self.package_name
-    }
-
-    pub(crate) fn captured_at(&self) -> &str {
-        &self.captured_at
+    /// Replace only the custom-queries snapshot (leaves canned cells
+    /// untouched). Used when a `:save` adds a new query mid-session and
+    /// we want to re-render the custom section without re-running the
+    /// canned pipeline.
+    pub fn reset_custom(&mut self, custom_queries: Vec<super::worker::CustomQuery>) {
+        self.custom = CustomMetricsState::new(custom_queries);
     }
 
     pub fn on_cell(&mut self, key: SummaryKey, outcome: SummaryCellOutcome) {
@@ -402,11 +430,11 @@ impl SummaryState {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        // Startup card and Memory section are conditional: traces without
-        // `android.startup` data or without memory counters entirely skip
-        // their sections instead of rendering stubs. This keeps narrow
-        // terminals from losing vertical space to a fixed "—" card on
-        // captures that don't have the relevant data sources enabled.
+        // Startup card, Memory section, and Custom metrics section are all
+        // conditional: captures without the underlying data / queries
+        // collapse those regions entirely instead of rendering stubs.
+        // This keeps narrow terminals from losing vertical space to
+        // empty panels.
         let show_startup = matches!(
             self.cells.get(&SummaryKey::StartupInfo),
             Some(CellState::Rows(rows)) if !rows.is_empty()
@@ -415,6 +443,7 @@ impl SummaryState {
             self.cells.get(&SummaryKey::RssOverTime),
             Some(CellState::Rows(rows)) if !rows.is_empty()
         );
+        let custom_height = self.custom.rendered_height();
 
         let mut constraints = vec![
             Constraint::Length(3), // context strip
@@ -427,6 +456,9 @@ impl SummaryState {
             constraints.push(Constraint::Length(5)); // memory section (label + sparkline)
         }
         constraints.push(Constraint::Min(3)); // main-thread hotspots
+        if custom_height > 0 {
+            constraints.push(Constraint::Length(custom_height));
+        }
         constraints.push(Constraint::Length(3)); // trace contents ribbon
 
         let chunks = Layout::default()
@@ -448,6 +480,10 @@ impl SummaryState {
         }
         self.render_main_thread_hotspots(frame, chunks[idx]);
         idx += 1;
+        if custom_height > 0 {
+            self.custom.render(frame, chunks[idx]);
+            idx += 1;
+        }
         self.render_trace_contents_ribbon(frame, chunks[idx]);
     }
 
@@ -777,6 +813,115 @@ impl SummaryState {
             .block(block)
             .alignment(Alignment::Center);
         frame.render_widget(para, area);
+    }
+}
+
+/// Cap for how many custom-metric rows we render before truncating. Beyond
+/// this, a single overflow line points the user at the REPL. Arbitrary
+/// but picked so the section doesn't dominate the Summary tab on a
+/// typical terminal; easy to bump later or make configurable.
+const CUSTOM_VISIBLE_CAP: usize = 8;
+
+/// Truncate display lines wider than this. Keeps the section readable on
+/// narrow terminals and prevents a pathological multi-row result from
+/// blowing out a line.
+const CUSTOM_LINE_MAX_CHARS: usize = 80;
+
+impl CustomMetricsState {
+    fn new(queries: Vec<super::worker::CustomQuery>) -> Self {
+        let mut results = HashMap::with_capacity(queries.len());
+        for q in &queries {
+            results.insert(q.name.clone(), CustomResultState::Pending);
+        }
+        Self { queries, results }
+    }
+
+    fn on_result(&mut self, name: String, result: Result<QueryResult, String>) {
+        let state = match result {
+            Ok(qr) => CustomResultState::Done(qr),
+            Err(e) => CustomResultState::Error(e),
+        };
+        self.results.insert(name, state);
+    }
+
+    /// Pre-compute the total vertical size the section needs. 0 means
+    /// "no queries — collapse this section entirely." Otherwise: 1 row
+    /// for the heading border + one row per visible query + 1 row for
+    /// the optional overflow indicator.
+    fn rendered_height(&self) -> u16 {
+        if self.queries.is_empty() {
+            return 0;
+        }
+        // 2 rows of border + content.
+        let visible = self.queries.len().min(CUSTOM_VISIBLE_CAP);
+        let overflow_row = if self.queries.len() > CUSTOM_VISIBLE_CAP { 1 } else { 0 };
+        (2 + visible + overflow_row) as u16
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect) {
+        let dim = Style::default().fg(theme::dim());
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(dim)
+            .title(Span::styled(" Custom metrics ", dim));
+
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        for q in self.queries.iter().take(CUSTOM_VISIBLE_CAP) {
+            let state = self.results.get(&q.name);
+            lines.push(render_custom_line(&q.name, state));
+        }
+        if self.queries.len() > CUSTOM_VISIBLE_CAP {
+            let overflow = self.queries.len() - CUSTOM_VISIBLE_CAP;
+            lines.push(Line::from(Span::styled(
+                format!("+{overflow} more — run in REPL to view"),
+                dim,
+            )));
+        }
+
+        let para = Paragraph::new(lines).block(block);
+        frame.render_widget(para, area);
+    }
+}
+
+/// Format one custom-metric line. Shape-aware:
+///  - Pending/missing → `name: …` / `name: —`
+///  - Error           → `name: ✗ <msg>`
+///  - 1×1 result      → `name: <value>`
+///  - 1×N single row  → `name: col1 · col2 · …`
+///  - N×M multi-row   → `name: col1 · col2 · … (+N rows)` (first row inline)
+/// Values wider than `CUSTOM_LINE_MAX_CHARS` are truncated.
+fn render_custom_line<'a>(name: &'a str, state: Option<&CustomResultState>) -> Line<'a> {
+    let label_style = Style::default().fg(theme::dim());
+    let value_style = Style::default()
+        .fg(theme::accent())
+        .add_modifier(Modifier::BOLD);
+    let err_style = Style::default().fg(theme::err());
+
+    let (value, style) = match state {
+        None | Some(CustomResultState::Pending) => ("…".to_string(), label_style),
+        Some(CustomResultState::Error(msg)) => (
+            format!("✗ {}", truncate(msg, CUSTOM_LINE_MAX_CHARS.saturating_sub(10))),
+            err_style,
+        ),
+        Some(CustomResultState::Done(qr)) => (format_custom_value(qr), value_style),
+    };
+    Line::from(vec![
+        Span::styled(format!("  {name}: "), label_style),
+        Span::styled(truncate(&value, CUSTOM_LINE_MAX_CHARS), style),
+    ])
+}
+
+fn format_custom_value(qr: &QueryResult) -> String {
+    if qr.rows.is_empty() {
+        return "—".into();
+    }
+    let first = &qr.rows[0];
+    let cell_strs: Vec<String> = first.cells().iter().map(cell_display).collect();
+    let inline = cell_strs.join(" · ");
+    if qr.rows.len() > 1 {
+        format!("{inline} (+{} rows)", qr.rows.len() - 1)
+    } else {
+        inline
     }
 }
 
@@ -1133,7 +1278,7 @@ mod tests {
 
     #[test]
     fn missing_table_outcome_downgrades_to_dash() {
-        let mut s = SummaryState::new("com.example".into(), "now".into());
+        let mut s = SummaryState::new("com.example".into(), "now".into(), Vec::new());
         s.on_cell(
             SummaryKey::JankFrameCount,
             SummaryCellOutcome::MissingTable,
@@ -1476,5 +1621,102 @@ mod tests {
             .unwrap();
         assert!(total.sql.contains("'com.foo.bar'"));
         assert!(!total.sql.contains("state = '"));
+    }
+
+    fn qr_1x1(val: Cell) -> QueryResult {
+        QueryResult {
+            columns: vec!["v".into()],
+            rows: vec![Row::new_for_test(vec![val])],
+            elapsed_ms: None,
+        }
+    }
+
+    #[test]
+    fn format_custom_value_single_cell_renders_value() {
+        let qr = qr_1x1(Cell::Int(42));
+        assert_eq!(format_custom_value(&qr), "42");
+    }
+
+    #[test]
+    fn format_custom_value_single_row_multi_col_joins_with_mid_dot() {
+        let qr = QueryResult {
+            columns: vec!["a".into(), "b".into(), "c".into()],
+            rows: vec![Row::new_for_test(vec![
+                Cell::Int(1),
+                Cell::String("two".into()),
+                Cell::Int(3),
+            ])],
+            elapsed_ms: None,
+        };
+        assert_eq!(format_custom_value(&qr), "1 · two · 3");
+    }
+
+    #[test]
+    fn format_custom_value_multi_row_appends_rows_hint() {
+        let qr = QueryResult {
+            columns: vec!["x".into()],
+            rows: vec![
+                Row::new_for_test(vec![Cell::Int(1)]),
+                Row::new_for_test(vec![Cell::Int(2)]),
+                Row::new_for_test(vec![Cell::Int(3)]),
+            ],
+            elapsed_ms: None,
+        };
+        assert_eq!(format_custom_value(&qr), "1 (+2 rows)");
+    }
+
+    #[test]
+    fn format_custom_value_empty_result_is_dash() {
+        let qr = QueryResult {
+            columns: vec!["x".into()],
+            rows: Vec::new(),
+            elapsed_ms: None,
+        };
+        assert_eq!(format_custom_value(&qr), "—");
+    }
+
+    fn custom_query(name: &str, sql: &str) -> super::super::worker::CustomQuery {
+        super::super::worker::CustomQuery {
+            name: name.into(),
+            sql: sql.into(),
+        }
+    }
+
+    #[test]
+    fn custom_metrics_section_height_accounts_for_overflow() {
+        // Empty queries → height 0 (section collapses).
+        let empty = CustomMetricsState::new(Vec::new());
+        assert_eq!(empty.rendered_height(), 0);
+
+        // Below cap: 1 border row (top+bottom = 2) + N content rows.
+        let three = CustomMetricsState::new(vec![
+            custom_query("a", "1"),
+            custom_query("b", "2"),
+            custom_query("c", "3"),
+        ]);
+        assert_eq!(three.rendered_height(), 2 + 3);
+
+        // Above cap: adds 1 row for the overflow hint.
+        let qs: Vec<_> = (0..12).map(|i| custom_query(&format!("q{i}"), "SELECT 1")).collect();
+        let overflow = CustomMetricsState::new(qs);
+        assert_eq!(overflow.rendered_height(), 2 + CUSTOM_VISIBLE_CAP as u16 + 1);
+    }
+
+    #[test]
+    fn custom_metrics_records_ok_and_error_results() {
+        let mut s = CustomMetricsState::new(vec![
+            custom_query("a", "SELECT 1"),
+            custom_query("b", "SELECT * FROM missing"),
+        ]);
+        s.on_result("a".into(), Ok(qr_1x1(Cell::Int(1))));
+        s.on_result("b".into(), Err("no such table".into()));
+        assert!(matches!(
+            s.results.get("a"),
+            Some(CustomResultState::Done(_))
+        ));
+        assert!(matches!(
+            s.results.get("b"),
+            Some(CustomResultState::Error(_))
+        ));
     }
 }
