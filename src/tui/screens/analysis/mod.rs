@@ -4,8 +4,10 @@
 //! under the hood. Two tabs sit on top: a pre-canned summary and a raw SQL
 //! REPL.
 
+pub(crate) mod completion;
 pub(crate) mod library;
 mod repl;
+pub(crate) mod schema_browser;
 pub(crate) mod summary;
 pub(crate) mod worker;
 
@@ -36,8 +38,19 @@ use crate::tui::theme;
 pub use worker::AnalysisEvent;
 
 use repl::{KeyOutcome as ReplOutcome, ReplState};
+use schema_browser::{BrowserAction, SchemaBrowser};
 use summary::SummaryState;
 use worker::{CustomQuery, WorkerRequest, spawn_worker};
+
+/// Terminal width at/above which the schema browser is visible on the
+/// REPL tab. Raised alongside the panel width so the REPL editor still
+/// has enough room to display typical SQL without wrapping.
+const SCHEMA_PANEL_MIN_WIDTH: u16 = 140;
+/// Width reserved for the schema panel when shown, including borders.
+/// Wide enough for long stdlib table names (e.g.
+/// `android_performance_exclusive_thread_states`) and for the filter
+/// string in the title without truncation.
+const SCHEMA_PANEL_WIDTH: u16 = 60;
 
 /// Action the screen asks the `App` router to perform. Everything else is
 /// handled internally.
@@ -112,6 +125,9 @@ pub struct AnalysisScreen {
     status: theme::Status,
     error: Option<String>,
     next_query_id: u64,
+    /// Right-side schema tree. Lives at the screen level so both tabs
+    /// can see it without each owning a copy of the schema snapshot.
+    schema: SchemaBrowser,
 }
 
 impl AnalysisScreen {
@@ -148,6 +164,7 @@ impl AnalysisScreen {
             status: theme::Status::default(),
             error: None,
             next_query_id: 1,
+            schema: SchemaBrowser::new(),
         }
     }
 
@@ -191,8 +208,12 @@ impl AnalysisScreen {
                     repl: ReplState::new(self.db.clone(), self.package_name.clone()),
                 };
                 // Kick off the summary immediately so the default tab fills in.
+                // Also fire a one-shot schema enumeration so the REPL
+                // completion popup gets trace-specific tables alongside
+                // the curated static candidates.
                 if let Some(tx) = &self.worker_tx {
                     let _ = tx.send(WorkerRequest::RunSummary { custom_queries });
+                    let _ = tx.send(WorkerRequest::LoadSchema);
                 }
             }
             AnalysisEvent::LoadFailed(msg) => {
@@ -222,6 +243,18 @@ impl AnalysisScreen {
                     // Summary.
                     repl.on_custom_result(&name, &result);
                     summary.on_custom_result(name, result);
+                }
+            }
+            AnalysisEvent::SchemaLoaded { tables } => {
+                self.schema.set_schema(tables.clone());
+                if let State::Ready { repl, .. } = &mut self.state {
+                    repl.set_schema(tables);
+                }
+            }
+            AnalysisEvent::ColumnsLoaded { by_table } => {
+                self.schema.set_columns(by_table.clone());
+                if let State::Ready { repl, .. } = &mut self.state {
+                    repl.set_columns(by_table);
                 }
             }
         }
@@ -265,6 +298,44 @@ impl AnalysisScreen {
 
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+        // Schema browser focus takes priority over everything else —
+        // when focused, nav keys drive the tree and `Esc` / `Alt+B`
+        // return focus to whichever tab is active. The browser is only
+        // meaningful in the Ready state.
+        if self.schema.is_focused() && matches!(&self.state, State::Ready { .. }) {
+            match self.schema.on_key(key) {
+                BrowserAction::Unfocus => {
+                    self.schema.set_focused(false);
+                    return AnalysisAction::None;
+                }
+                BrowserAction::Insert(text) => {
+                    if let State::Ready { repl, .. } = &mut self.state {
+                        repl.insert_at_cursor(&text);
+                    }
+                    // Unfocus after insertion so the user sees the
+                    // editor change and can continue typing.
+                    self.schema.set_focused(false);
+                    self.set_status(format!("inserted `{text}`"));
+                    return AnalysisAction::None;
+                }
+                BrowserAction::None => return AnalysisAction::None,
+            }
+        }
+
+        // `Alt+B` toggles focus into the schema browser. The panel is
+        // REPL-only, so pressing it from the Summary tab switches to
+        // REPL first — one keystroke to go from a summary tile to
+        // browsing the underlying tables. No-op pre-Ready: nothing to
+        // focus yet.
+        if alt && matches!(key.code, KeyCode::Char('b') | KeyCode::Char('B')) {
+            if matches!(&self.state, State::Ready { .. }) {
+                self.tab = Tab::Repl;
+                self.schema.set_focused(true);
+            }
+            return AnalysisAction::None;
+        }
 
         // "Text focus" means a text input on the active tab wants to consume
         // every printable character. Right now only the REPL has one. In this
@@ -483,10 +554,40 @@ impl AnalysisScreen {
                 .wrap(Wrap { trim: true });
                 frame.render_widget(body, area);
             }
-            State::Ready { summary, repl, .. } => match self.tab {
-                Tab::Summary => summary.render(frame, area),
-                Tab::Repl => repl.render(frame, area),
-            },
+            State::Ready { summary, repl, .. } => {
+                // Schema panel is REPL-only: the Summary tab has no
+                // editor to pair it with. When shown, reserve a fixed
+                // right-hand column so table/column lists don't wrap.
+                let show_schema =
+                    self.tab == Tab::Repl && area.width >= SCHEMA_PANEL_MIN_WIDTH;
+                let (main_area, schema_area) = if show_schema {
+                    let cols = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([
+                            Constraint::Min(10),
+                            Constraint::Length(SCHEMA_PANEL_WIDTH),
+                        ])
+                        .split(area);
+                    (cols[0], Some(cols[1]))
+                } else {
+                    (area, None)
+                };
+                match self.tab {
+                    Tab::Summary => summary.render(frame, main_area),
+                    Tab::Repl => repl.render(frame, main_area),
+                }
+                if let Some(sa) = schema_area {
+                    // Refresh the scope-highlight set from the REPL's
+                    // current editor each frame. Parser is cheap
+                    // (tokenises the buffer up to the cursor) and keeps
+                    // the tree's accent-secondary emphasis in sync with
+                    // what the user is editing without extra plumbing.
+                    let scope: std::collections::HashSet<String> =
+                        repl.scope_tables().into_iter().collect();
+                    self.schema.set_scoped(scope);
+                    self.schema.render(frame, sa);
+                }
+            }
         }
     }
 
@@ -523,8 +624,8 @@ impl AnalysisScreen {
             (State::Ready { .. }, Tab::Repl) => &[
                 ("[Tab]", " switch pane  "),
                 ("[Alt+Enter]", " run  "),
-                ("[↑/↓]", " history (empty)  "),
-                ("[Shift+↑/↓]", " scroll  "),
+                ("[Ctrl+Space]", " complete  "),
+                ("[Alt+B]", " schema  "),
                 ("[Ctrl+O]", " open in UI  "),
                 ("[Ctrl+Q]", " back"),
             ],
