@@ -41,6 +41,7 @@ use crate::trace_processor::QueryResult;
 use crate::tui::text_input::{self, TextAction};
 use crate::tui::theme;
 
+use super::completion::{self, Candidate, CompletionState};
 use super::library::{self, LIBRARY};
 use super::summary::cell_display;
 
@@ -49,7 +50,7 @@ use super::summary::cell_display;
 const RESULT_ROW_CAP: usize = 500;
 
 /// Height of the multi-line SQL input area, in rows (including borders).
-const INPUT_HEIGHT: u16 = 8;
+const INPUT_HEIGHT: u16 = 14;
 
 /// Height of the saved-metrics pane. 6 visible rows + top/bottom borders
 /// gives room for ~4 metrics at a glance without eating the result pane.
@@ -65,6 +66,25 @@ const SAVED_LINE_MAX_CHARS: usize = 60;
 /// applied by the DAO's `name` column (no enforced length there, but
 /// this keeps the UI sane).
 const MAX_NAME_CHARS: usize = 80;
+
+/// Case-insensitive PerfettoSQL keyword pattern. Uses `ratatui_textarea`'s
+/// `search` feature (single-style matches) as the highlight mechanism —
+/// there is no per-token styling hook, so every keyword gets the same
+/// accent colour. Word boundaries (`\b`) prevent matches inside
+/// identifiers like `limit_count` or `select_one`.
+const SQL_KEYWORDS: &str = r"(?i)\b(select|from|where|join|left|right|inner|outer|full|cross|on|using|as|group|by|order|having|limit|offset|union|intersect|except|with|recursive|in|and|or|not|is|null|true|false|case|when|then|else|end|between|like|glob|regexp|distinct|all|cast|include|perfetto|module|create|view|table|temp|temporary|if|exists|index|drop|insert|into|values|update|set|delete)\b";
+
+fn apply_sql_highlight(ta: &mut TextArea<'static>) {
+    // `search` feature is enabled in Cargo.toml; the pattern is a
+    // compile-time constant so this regex only compiles once per editor
+    // instance. Ignore failures — our pattern is static and valid.
+    let _ = ta.set_search_pattern(SQL_KEYWORDS);
+    ta.set_search_style(
+        Style::default()
+            .fg(theme::accent_secondary())
+            .add_modifier(Modifier::BOLD),
+    );
+}
 
 // ── types ────────────────────────────────────────────────────────────────
 
@@ -141,6 +161,23 @@ pub struct ReplState {
     /// Parent polls via [`take_command_error`] and routes to its status
     /// bar.
     command_error: Option<String>,
+    /// Active completion popup state. `Some` only while the user is
+    /// browsing suggestions; orthogonal to `Mode` so the popup can open
+    /// and close inside `Mode::Editing` without affecting modal flows.
+    completion: Option<CompletionState>,
+    /// Effective candidate pool: curated static entries + schema tables
+    /// + per-table columns. Rebuilt by [`ReplState::set_schema`] and
+    /// [`ReplState::set_columns`]; `CompletionState` indices reference
+    /// this slice, so we close the popup whenever the pool changes
+    /// under it.
+    candidates: Vec<Candidate>,
+    /// Tables discovered at load. Kept so `set_columns` can rebuild
+    /// without re-reading from the worker side.
+    schema_tables: Vec<String>,
+    /// Per-table column list populated asynchronously after schema
+    /// load. Re-applied on top of `candidates` each time a fresh
+    /// schema or column snapshot arrives.
+    schema_columns: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// Action emitted by `on_key` for the parent screen to act on.
@@ -168,9 +205,60 @@ impl ReplState {
             mode: Mode::Editing,
             suggested_save_name: None,
             command_error: None,
+            completion: None,
+            candidates: completion::static_candidates(),
+            schema_tables: Vec::new(),
+            schema_columns: std::collections::HashMap::new(),
         };
         this.reload_saved();
         this
+    }
+
+    /// Merge runtime-discovered tables into the completion candidate
+    /// pool. Closes any open completion popup because its indices
+    /// reference the previous slice.
+    pub fn set_schema(&mut self, tables: Vec<String>) {
+        self.schema_tables = tables;
+        self.rebuild_candidates();
+    }
+
+    /// Merge runtime-discovered column lists into the candidate pool.
+    /// Columns are offered only when the editor's FROM-scope lists
+    /// their owning table (see [`completion::ScopeHint`]).
+    pub fn set_columns(
+        &mut self,
+        by_table: std::collections::HashMap<String, Vec<String>>,
+    ) {
+        self.schema_columns = by_table;
+        self.rebuild_candidates();
+    }
+
+    /// Return the tables currently in the editor's nearest FROM-scope.
+    /// Used by the schema browser to distinguish "query already
+    /// references this" from the rest of the tree.
+    pub fn scope_tables(&self) -> Vec<String> {
+        completion::parse_scope(&self.editor).tables
+    }
+
+    /// Drop `text` at the current editor cursor position. Closes any
+    /// open completion popup — its indices would be invalidated by
+    /// the insertion — and lets the caller decide what to do with
+    /// focus. Used by the schema browser's `i` chord.
+    pub fn insert_at_cursor(&mut self, text: &str) {
+        self.completion = None;
+        self.editor.insert_str(text);
+    }
+
+    fn rebuild_candidates(&mut self) {
+        let mut base = completion::static_candidates();
+        let table_entries =
+            completion::schema_candidates(&self.schema_tables, &base);
+        base.extend(table_entries);
+        let column_entries = completion::column_candidates(&self.schema_columns);
+        base.extend(column_entries);
+        self.candidates = base;
+        // Stale indices — popup must close whenever the pool is rebuilt.
+        self.completion = None;
     }
 
     pub fn take_command_error(&mut self) -> Option<String> {
@@ -290,6 +378,54 @@ impl ReplState {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
+        // Completion popup intercepts navigation/accept keys first. Any
+        // other key falls through to editor handling, then refreshes the
+        // popup so the filter tracks the prefix.
+        if self.completion.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.completion = None;
+                    return KeyOutcome::None;
+                }
+                KeyCode::Up => {
+                    if let Some(c) = &mut self.completion {
+                        c.move_up();
+                    }
+                    return KeyOutcome::None;
+                }
+                KeyCode::Down => {
+                    if let Some(c) = &mut self.completion {
+                        c.move_down();
+                    }
+                    return KeyOutcome::None;
+                }
+                KeyCode::Tab | KeyCode::Enter => {
+                    if let Some(c) = self.completion.take() {
+                        c.accept(&mut self.editor);
+                    }
+                    return KeyOutcome::None;
+                }
+                KeyCode::Char(' ') if ctrl => {
+                    // Re-trigger dismisses.
+                    self.completion = None;
+                    return KeyOutcome::None;
+                }
+                _ => {}
+            }
+        }
+
+        // Explicit completion trigger: Ctrl+Space (IDE standard) or
+        // Alt+/ (chord-friendly fallback when terminals don't forward
+        // Ctrl+Space).
+        let trigger_completion = (ctrl && matches!(key.code, KeyCode::Char(' ')))
+            || (alt && matches!(key.code, KeyCode::Char('/')));
+        if trigger_completion && self.completion.is_none() {
+            let scope = completion::parse_scope(&self.editor);
+            self.completion =
+                CompletionState::open(&self.editor, &self.candidates, &scope);
+            return KeyOutcome::None;
+        }
+
         // Alt-chords: action keys. Order matters only for readability —
         // none overlap.
         if alt {
@@ -304,6 +440,7 @@ impl ReplState {
                 KeyCode::Char('d') | KeyCode::Char('D') => return self.start_delete(),
                 KeyCode::Char('r') | KeyCode::Char('R') => return self.start_rename(),
                 KeyCode::Char('i') | KeyCode::Char('I') => {
+                    self.completion = None;
                     self.mode = Mode::Library { highlight: 0 };
                     return KeyOutcome::None;
                 }
@@ -354,6 +491,15 @@ impl ReplState {
 
         // Everything else feeds the textarea.
         self.editor.input(key);
+        // If the completion popup was open, refresh the filter against
+        // the new cursor prefix; close if the prefix is gone or the
+        // cursor drifted off the word.
+        if let Some(c) = &mut self.completion {
+            let scope = completion::parse_scope(&self.editor);
+            if !c.refresh(&self.editor, &self.candidates, &scope) {
+                self.completion = None;
+            }
+        }
         KeyOutcome::None
     }
 
@@ -466,6 +612,7 @@ impl ReplState {
                 self.editing = None;
                 self.suggested_save_name = Some(entry.name.to_string());
                 self.mode = Mode::Editing;
+                self.completion = None;
                 KeyOutcome::None
             }
             KeyCode::Up => {
@@ -574,6 +721,7 @@ impl ReplState {
         };
         self.editor = editor_with(&row.sql);
         self.editing = Some(row.name.clone());
+        self.completion = None;
         KeyOutcome::None
     }
 
@@ -581,6 +729,7 @@ impl ReplState {
         self.editor = fresh_editor(Mode::Editing, None, false);
         self.editing = None;
         self.suggested_save_name = None;
+        self.completion = None;
     }
 
     fn start_delete(&mut self) -> KeyOutcome {
@@ -808,7 +957,18 @@ impl ReplState {
 
     fn render_editor_or_modal(&self, frame: &mut Frame, area: Rect) {
         match &self.mode {
-            Mode::Editing => self.render_editor(frame, area),
+            Mode::Editing => {
+                self.render_editor(frame, area);
+                if let Some(c) = &self.completion {
+                    super::completion::render_popup(
+                        frame,
+                        area,
+                        frame.area(),
+                        &self.editor,
+                        c,
+                    );
+                }
+            }
             Mode::SaveAs { buffer } => {
                 render_name_prompt(frame, area, "Save as…", "metric name", buffer)
             }
@@ -975,6 +1135,7 @@ fn fresh_editor(_mode: Mode, _editing: Option<&str>, _dirty: bool) -> TextArea<'
     // path still looks right.
     ta.set_cursor_line_style(Style::default());
     ta.set_line_number_style(Style::default().fg(theme::dim()));
+    apply_sql_highlight(&mut ta);
     ta
 }
 
@@ -987,6 +1148,7 @@ fn editor_with(text: &str) -> TextArea<'static> {
     ta.move_cursor(CursorMove::End);
     ta.set_cursor_line_style(Style::default());
     ta.set_line_number_style(Style::default().fg(theme::dim()));
+    apply_sql_highlight(&mut ta);
     ta
 }
 
@@ -1498,5 +1660,211 @@ mod tests {
         let out = r.on_key(press(KeyCode::Enter)); // accept pre-filled
         assert!(matches!(out, KeyOutcome::SavedMetricsChanged));
         assert!(r.suggested_save_name.is_none());
+    }
+
+    // ── completion tests ─────────────────────────────────────────────────
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn ctrl_space_opens_completion_with_current_word_prefix() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SELE");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(r.completion.is_some());
+    }
+
+    #[test]
+    fn alt_slash_opens_completion_as_fallback() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "FR");
+        let _ = r.on_key(alt(KeyCode::Char('/')));
+        let c = r.completion.as_ref().expect("alt+/ opens");
+        assert!(c.visible_len() >= 1);
+    }
+
+    #[test]
+    fn ctrl_space_on_whitespace_opens_full_browse_popup() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SELECT ");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        let popup = r.completion.as_ref().expect("popup opens with empty prefix");
+        // At least more than a handful — should be the full static pool.
+        assert!(popup.visible_len() > 10);
+    }
+
+    #[test]
+    fn tab_accepts_and_replaces_prefix_with_label() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SELECT * FROM sli");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(r.completion.is_some());
+        // First filtered candidate whose label starts with "sli" is `slice`.
+        let _ = r.on_key(press(KeyCode::Tab));
+        assert!(r.completion.is_none());
+        assert_eq!(r.editor_text(), "SELECT * FROM slice");
+    }
+
+    #[test]
+    fn esc_closes_completion_without_changing_editor() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SELEC");
+        let before = r.editor_text();
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        let _ = r.on_key(press(KeyCode::Esc));
+        assert!(r.completion.is_none());
+        assert_eq!(r.editor_text(), before);
+        assert!(matches!(r.mode, Mode::Editing));
+    }
+
+    #[test]
+    fn typing_while_open_refreshes_filter_and_closes_when_no_match() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SE");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(r.completion.is_some());
+        // Typing a letter that extends the prefix to something with no
+        // candidate (e.g. "SEX") must close the popup.
+        type_str(&mut r, "X");
+        assert!(r.completion.is_none());
+    }
+
+    #[test]
+    fn ctrl_space_twice_toggles_closed() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SE");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(r.completion.is_some());
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(r.completion.is_none());
+    }
+
+    #[test]
+    fn alt_n_closes_completion() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SE");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(r.completion.is_some());
+        let _ = r.on_key(alt(KeyCode::Char('n')));
+        assert!(r.completion.is_none());
+        assert!(r.editor_text().is_empty());
+    }
+
+    #[test]
+    fn set_schema_merges_runtime_tables_into_candidates() {
+        let mut r = repl_with(&[]);
+        // Before schema load: typing "android_s" should not offer the
+        // runtime `android_startups` table.
+        type_str(&mut r, "SELECT * FROM android_s");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(
+            r.completion.is_none()
+                || !r
+                    .completion
+                    .as_ref()
+                    .unwrap()
+                    .selected()
+                    .map(|c| c.label.as_ref() == "android_startups")
+                    .unwrap_or(false),
+            "no schema entry should exist pre-load",
+        );
+        // Close any popup and apply schema.
+        r.completion = None;
+        r.set_schema(vec!["android_startups".into(), "slice".into()]);
+        // Retrigger: the runtime table should now be offered.
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        let popup = r.completion.as_ref().expect("popup opens after schema");
+        assert!(
+            popup.selected().map(|c| c.label.as_ref()) == Some("android_startups"),
+            "runtime table should lead the filter for 'android_s'",
+        );
+    }
+
+    #[test]
+    fn set_schema_closes_open_popup_to_invalidate_indices() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SE");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(r.completion.is_some());
+        r.set_schema(vec!["android_startups".into()]);
+        assert!(
+            r.completion.is_none(),
+            "set_schema must close any open popup — its indices are stale",
+        );
+    }
+
+    #[test]
+    fn set_columns_enables_scoped_column_completion() {
+        let mut r = repl_with(&[]);
+        r.set_schema(vec!["slice".into(), "thread".into()]);
+        let mut by_table = std::collections::HashMap::new();
+        by_table.insert(
+            "slice".to_string(),
+            vec!["ts".into(), "dur".into(), "name".into()],
+        );
+        by_table.insert("thread".to_string(), vec!["utid".into(), "tid".into()]);
+        r.set_columns(by_table);
+
+        type_str(&mut r, "SELECT * FROM slice WHERE na");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        let popup = r.completion.as_ref().expect("popup opens");
+        assert!(
+            popup
+                .selected()
+                .map(|c| c.label.as_ref() == "name")
+                .unwrap_or(false),
+            "slice.name should lead for prefix 'na' in FROM slice scope",
+        );
+    }
+
+    #[test]
+    fn scope_tables_returns_empty_before_from_clause() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SELECT ts");
+        assert!(r.scope_tables().is_empty());
+    }
+
+    #[test]
+    fn scope_tables_returns_tables_when_from_clause_present() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SELECT * FROM slice WHERE ");
+        assert_eq!(r.scope_tables(), vec!["slice".to_string()]);
+    }
+
+    #[test]
+    fn insert_at_cursor_writes_text_and_closes_completion() {
+        let mut r = repl_with(&[]);
+        type_str(&mut r, "SELECT * FROM ");
+        // Open a completion popup to verify it gets closed.
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(r.completion.is_some());
+        r.insert_at_cursor("slice");
+        assert!(r.completion.is_none());
+        assert_eq!(r.editor_text(), "SELECT * FROM slice");
+    }
+
+    #[test]
+    fn column_completion_suppressed_without_from_scope() {
+        let mut r = repl_with(&[]);
+        let mut by_table = std::collections::HashMap::new();
+        by_table.insert("slice".to_string(), vec!["name".into()]);
+        r.set_schema(vec!["slice".into()]);
+        r.set_columns(by_table);
+
+        // No FROM — prefix "na" only matches the column. Popup should
+        // not open.
+        type_str(&mut r, "SELECT na");
+        let _ = r.on_key(ctrl(KeyCode::Char(' ')));
+        assert!(
+            r.completion.is_none(),
+            "no scope + only-column match must keep popup closed",
+        );
     }
 }

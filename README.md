@@ -104,7 +104,7 @@ Press `a` on any trace in session detail. The Analysis screen spawns a pinned-ve
 | Tab | What it shows |
 |---|---|
 | **Summary** | Context strip (package · device · captured-at · duration), three health tiles (jank rate, frame times p50/p95, main-thread busy %), conditional startup card, memory-over-time sparkline, main-thread hotspots, a Custom metrics section driven by your saved queries, and a data-sources ribbon. Press `[c]` to toggle compact mode |
-| **SQL** | Three stacked panes: saved metrics list · result · multi-line editor. All actions via visible `Alt+` chords: `Alt+Enter` run, `Alt+S` save/update, `Alt+L` load highlighted, `Alt+N` new, `Alt+R` rename, `Alt+D` delete, `Alt+I` open the built-in query library (~9 curated PerfettoSQL examples), `Alt+Up`/`Alt+Down` cycle the highlight |
+| **SQL** | Three stacked panes: saved metrics list · result · multi-line editor with keyword syntax highlighting. All actions via visible `Alt+` chords: `Alt+Enter` run, `Alt+S` save/update, `Alt+L` load highlighted, `Alt+N` new, `Alt+R` rename, `Alt+D` delete, `Alt+I` open the built-in query library (~9 curated PerfettoSQL examples), `Alt+Up`/`Alt+Down` cycle the highlight. `Ctrl+Space` (or `Alt+/`) opens a scope-aware completion popup — keywords + aggregates + tables, plus columns once `FROM <table>` puts a table in scope. On terminals ≥ 140 cols, `Alt+B` focuses a right-side schema browser; expand tables to browse columns, type letters to filter, `Alt+I` to insert the highlighted name at the editor cursor |
 
 Saved metrics are scoped per-app (keyed on `(package_name, name)`) and auto-run on every Summary refresh, so they build a dashboard tailored to each app and persist across every session for the same package.
 
@@ -166,7 +166,7 @@ src/
 ## Testing
 
 ```bash
-cargo test   # 141 tests
+cargo test   # 195 tests
 ```
 
 ## Releasing

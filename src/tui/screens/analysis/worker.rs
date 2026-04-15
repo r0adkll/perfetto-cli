@@ -35,6 +35,12 @@ pub enum WorkerRequest {
     /// SQL when multiple queries are in flight (we only allow one at a time
     /// today but the id keeps the protocol future-proof).
     RunQuery { id: u64, sql: String },
+    /// Enumerate the loaded trace's tables for the REPL's completion
+    /// popup. Fires exactly once after load; the result flows back as a
+    /// single [`AnalysisEvent::SchemaLoaded`] regardless of success —
+    /// query failure yields an empty list so the REPL falls back to the
+    /// curated static candidates silently.
+    LoadSchema,
 }
 
 /// A user-saved PerfettoSQL query fed to the worker alongside the canned
@@ -75,6 +81,20 @@ pub enum AnalysisEvent {
     CustomResult {
         name: String,
         result: Result<QueryResult, String>,
+    },
+    /// Table names discovered in the loaded trace, feeding the REPL's
+    /// completion popup. Always emitted in response to a
+    /// [`WorkerRequest::LoadSchema`] — an empty vec on query failure
+    /// rather than an error, since losing schema completion is purely
+    /// a cosmetic downgrade.
+    SchemaLoaded { tables: Vec<String> },
+    /// Per-table column names discovered via `PRAGMA table_info`. Fired
+    /// once after [`AnalysisEvent::SchemaLoaded`] with the aggregated
+    /// map — per-table streaming would add event volume without helping
+    /// the UX, since the REPL rebuilds the merged candidate pool once
+    /// per snapshot anyway. Tables whose PRAGMA failed are omitted.
+    ColumnsLoaded {
+        by_table: std::collections::HashMap<String, Vec<String>>,
     },
 }
 
@@ -192,6 +212,30 @@ where
                         result,
                     }));
                 }
+                WorkerRequest::LoadSchema => {
+                    let tables = load_schema_tables(&tp).await;
+                    let tables_for_columns = tables.clone();
+                    if app_tx
+                        .send(wrap(AnalysisEvent::SchemaLoaded { tables }))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    // Immediately follow up with per-table column loads.
+                    // Serialised through this worker (trace_processor is
+                    // single-threaded anyway); a pathological trace with
+                    // many hundreds of tables would delay subsequent user
+                    // requests by ~seconds, so cap the scan.
+                    const MAX_TABLES_FOR_COLUMNS: usize = 256;
+                    let by_table = load_all_columns(
+                        &tp,
+                        tables_for_columns
+                            .iter()
+                            .take(MAX_TABLES_FOR_COLUMNS),
+                    )
+                    .await;
+                    let _ = app_tx.send(wrap(AnalysisEvent::ColumnsLoaded { by_table }));
+                }
             }
         }
 
@@ -249,6 +293,67 @@ fn classify_rows_error(e: anyhow::Error) -> SummaryRowsOutcome {
     } else {
         SummaryRowsOutcome::Error(msg)
     }
+}
+
+/// Enumerate user-queryable tables / views in the loaded trace.
+///
+/// Perfetto's `perfetto_tables` view lists internal implementation
+/// entries prefixed `__intrinsic_…` — users don't write those; they
+/// query the unprefixed wrappers that exist as views. `sqlite_master`
+/// is the authoritative source for both tables and views and the
+/// natural filter point: skip SQLite's own metadata (`sqlite_*`) and
+/// anything double-underscore-prefixed (Perfetto internals and
+/// stdlib-private scratch tables).
+///
+/// Failure yields an empty vec — schema browsing / completion is a
+/// nicety, not a feature-gate, so we swallow errors rather than
+/// surfacing them.
+async fn load_schema_tables(tp: &TraceProcessor) -> Vec<String> {
+    const SQL: &str = "SELECT name FROM sqlite_master \
+         WHERE type IN ('table','view') \
+           AND substr(name, 1, 2) != '__' \
+           AND name NOT LIKE 'sqlite_%' \
+         ORDER BY name";
+    let Ok(qr) = tp.query(SQL).await else {
+        return Vec::new();
+    };
+    qr.rows
+        .into_iter()
+        .filter_map(|r| r.cells().first().and_then(|c| c.as_str_opt()).map(|s| s.to_string()))
+        .collect()
+}
+
+/// Fetch column lists for every table via `PRAGMA table_info`. Tables
+/// whose PRAGMA errors (views on stdlib that don't accept the pragma,
+/// etc.) are silently skipped. Identifiers are double-quoted with `"`
+/// escaped as `""` to make the PRAGMA safe across any table name
+/// trace_processor might return.
+async fn load_all_columns<'a, I>(
+    tp: &TraceProcessor,
+    tables: I,
+) -> std::collections::HashMap<String, Vec<String>>
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    let mut out = std::collections::HashMap::new();
+    for table in tables {
+        let quoted = table.replace('"', "\"\"");
+        let sql = format!("PRAGMA table_info(\"{}\")", quoted);
+        let Ok(qr) = tp.query(&sql).await else {
+            continue;
+        };
+        // `PRAGMA table_info` columns: (cid, name, type, notnull, dflt_value, pk).
+        // We want column index 1 (name).
+        let cols: Vec<String> = qr
+            .rows
+            .iter()
+            .filter_map(|r| r.cells().get(1).and_then(|c| c.as_str_opt()).map(str::to_string))
+            .collect();
+        if !cols.is_empty() {
+            out.insert(table.clone(), cols);
+        }
+    }
+    out
 }
 
 /// Detect the trace_processor errors we want to downgrade to a soft
