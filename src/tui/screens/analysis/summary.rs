@@ -445,7 +445,7 @@ impl SummaryState {
             reserved = reserved.saturating_add(3);
         }
         if show_memory {
-            reserved = reserved.saturating_add(5);
+            reserved = reserved.saturating_add(4);
         }
         let custom_max = area.height.saturating_sub(reserved);
         let custom_height = self
@@ -460,7 +460,7 @@ impl SummaryState {
             constraints.push(Constraint::Length(3)); // startup card
         }
         if show_memory {
-            constraints.push(Constraint::Length(5)); // memory section (label + sparkline)
+            constraints.push(Constraint::Length(4)); // memory sparkline (title carries stats)
         }
         constraints.push(Constraint::Min(3)); // main-thread hotspots
         if custom_height > 0 {
@@ -655,34 +655,29 @@ impl SummaryState {
     /// `mem.rss` series. Only called when `RssOverTime` has rows, so an
     /// empty series path isn't reachable here.
     fn render_memory_section(&self, frame: &mut Frame, area: Rect) {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(2)])
-            .split(area);
-
         let series = extract_rss_series(self.cells.get(&SummaryKey::RssOverTime));
         let dim = Style::default().fg(theme::dim());
         let value = Style::default()
             .fg(theme::accent())
             .add_modifier(Modifier::BOLD);
 
-        let label = Line::from(vec![
-            Span::styled("Memory", dim),
-            Span::styled("  ·  min ", dim),
+        let title = Line::from(vec![
+            Span::styled(" Memory ", theme::title()),
+            Span::styled(" ·  min ", dim),
             Span::styled(format_bytes_or_dash(series.min), value),
             Span::styled("  ·  peak ", dim),
             Span::styled(format_bytes_or_dash(series.max), value),
+            Span::raw(" "),
         ]);
-        frame.render_widget(Paragraph::new(label), rows[0]);
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(dim);
+            .title(title);
         let sparkline = Sparkline::default()
             .block(block)
             .data(&series.values[..])
             .style(Style::default().fg(theme::accent()));
-        frame.render_widget(sparkline, rows[1]);
+        frame.render_widget(sparkline, area);
     }
 
     fn render_main_thread_hotspots(&self, frame: &mut Frame, area: Rect) {
