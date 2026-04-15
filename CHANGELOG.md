@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Trace list rows in session detail now lead with a compact `M/dd HH:mm` timestamp followed by the trace name, and the size column auto-scales to the highest fitting unit (bytes → KB → MB → GB) instead of always rendering as KB
+
 ## [0.5.0] - 2026-04-14
 
 ### Added

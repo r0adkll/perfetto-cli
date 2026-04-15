@@ -17,6 +17,7 @@ use crate::perfetto::capture::Cancel;
 use crate::perfetto::textproto;
 use crate::session::Session;
 use crate::tui::chrome;
+use crate::tui::screens::analysis::summary::format_bytes;
 use crate::tui::text_input::{self, TextAction};
 use crate::tui::theme;
 
@@ -964,10 +965,10 @@ impl SessionDetailScreen {
                         .label
                         .clone()
                         .unwrap_or_else(|| file_name(&t.file_path));
-                    let when = t.captured_at.format("%Y-%m-%d %H:%M:%S").to_string();
+                    let when = t.captured_at.format("%-m/%d %H:%M").to_string();
                     let size = t
                         .size_bytes
-                        .map(|b| format!("{:.1} KB", b as f64 / 1024.0))
+                        .map(format_bytes)
                         .unwrap_or_else(|| "—".into());
                     let duration = t
                         .duration_ms
@@ -975,9 +976,9 @@ impl SessionDetailScreen {
                         .unwrap_or_else(|| "—".into());
                     let mut spans = vec![
                         Span::raw("  "),
-                        Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
-                        Span::raw("  "),
                         Span::styled(when, theme::hint()),
+                        Span::raw("  "),
+                        Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
                         Span::raw("  "),
                         Span::styled(format!("{size}  {duration}"), theme::hint()),
                     ];
