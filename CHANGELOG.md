@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Session detail `[S]` — swap the startup command set applied to an existing session via a picker listing every saved set (plus `None` to clear). The set matching the session's current commands is pre-highlighted; Enter applies and persists to the DB and `session.json`
+
 ### Changed
 - Trace list rows in session detail now lead with a compact `M/dd HH:mm` timestamp followed by the trace name, and the size column auto-scales to the highest fitting unit (bytes → KB → MB → GB) instead of always rendering as KB
 
