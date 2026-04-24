@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 
 use crate::cloud::{self, UploadProgress};
 use crate::db::Database;
+use crate::db::command_sets::SavedCommandSet;
 use crate::db::traces::TraceRecord;
 use crate::import::Benchmark;
 use crate::import::benchmark_json;
@@ -78,6 +79,12 @@ enum Mode {
     Uploading { progress: Option<UploadProgress> },
     SharePickProvider {
         entries: Vec<(String, String)>, // (provider_name, url)
+        selected: usize,
+    },
+    /// Pick a saved command set to apply to this session. Index 0 means
+    /// "None" (clear commands); 1..=sets.len() indexes into `sets`.
+    PickCommandSet {
+        sets: Vec<SavedCommandSet>,
         selected: usize,
     },
 }
@@ -218,6 +225,9 @@ impl SessionDetailScreen {
             Mode::SharePickProvider { .. } => {
                 return self.handle_share_pick_provider(key);
             }
+            Mode::PickCommandSet { .. } => {
+                return self.handle_pick_command_set_key(db, key);
+            }
             Mode::Browse => {}
         }
 
@@ -317,6 +327,20 @@ impl SessionDetailScreen {
                 }
             }
             KeyCode::Char('d') => DetailAction::OpenFolder(self.session.folder_path.clone()),
+            KeyCode::Char('S') => {
+                match db.list_command_sets() {
+                    Ok(sets) => {
+                        let selected = sets
+                            .iter()
+                            .position(|s| s.commands == self.session.config.startup_commands)
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
+                        self.mode = Mode::PickCommandSet { sets, selected };
+                    }
+                    Err(e) => self.set_error(format!("load command sets: {e}")),
+                }
+                DetailAction::None
+            }
             KeyCode::Char('[') => {
                 self.preview_scroll = self.preview_scroll.saturating_sub(1);
                 DetailAction::None
@@ -596,6 +620,50 @@ impl SessionDetailScreen {
             KeyCode::Esc => {} // already replaced with Browse
             _ => {
                 self.mode = Mode::SharePickProvider { entries, selected };
+            }
+        }
+        DetailAction::None
+    }
+
+    fn handle_pick_command_set_key(&mut self, db: &Database, key: KeyEvent) -> DetailAction {
+        let Mode::PickCommandSet { sets, mut selected } =
+            std::mem::replace(&mut self.mode, Mode::Browse)
+        else {
+            return DetailAction::None;
+        };
+        let total = 1 + sets.len();
+        match key.code {
+            KeyCode::Esc => {}
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = (selected + total - 1) % total;
+                self.mode = Mode::PickCommandSet { sets, selected };
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected = (selected + 1) % total;
+                self.mode = Mode::PickCommandSet { sets, selected };
+            }
+            KeyCode::Enter => {
+                let (new_commands, label) = if selected == 0 {
+                    (Vec::new(), "None".to_string())
+                } else {
+                    let s = &sets[selected - 1];
+                    (s.commands.clone(), s.name.clone())
+                };
+                self.session.config.startup_commands = new_commands;
+                if let Some(id) = self.session.id {
+                    if let Err(e) = db.update_session_config(id, &self.session.config) {
+                        self.set_error(format!("save commands: {e}"));
+                        return DetailAction::None;
+                    }
+                }
+                if let Err(e) = self.session.ensure_filesystem() {
+                    self.set_error(format!("write session.json: {e}"));
+                    return DetailAction::None;
+                }
+                self.set_status(format!("startup commands → {label}"));
+            }
+            _ => {
+                self.mode = Mode::PickCommandSet { sets, selected };
             }
         }
         DetailAction::None
@@ -915,6 +983,9 @@ impl SessionDetailScreen {
             meta_area,
         );
 
+        if let Mode::PickCommandSet { sets, selected } = &self.mode {
+            render_command_set_picker(frame, traces_area, sets, *selected);
+        } else {
         let title = match &self.tag_filter {
             Some(tag) => format!(" Traces — filter: {tag} "),
             None => " Traces ".into(),
@@ -1006,6 +1077,7 @@ impl SessionDetailScreen {
                 .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
                 .highlight_symbol("▶ ");
             frame.render_stateful_widget(list, traces_area, &mut self.list_state);
+        }
         }
 
         let footer = match &self.mode {
@@ -1138,6 +1210,29 @@ impl SessionDetailScreen {
                     ])
                 }
             }
+            Mode::PickCommandSet { sets, selected } => {
+                let label = if *selected == 0 {
+                    "None".to_string()
+                } else {
+                    sets.get(*selected - 1)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_else(|| "?".into())
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!(" commands › {label} "),
+                        theme::title(),
+                    ),
+                    Span::styled(
+                        format!("({}/{})", selected + 1, 1 + sets.len()),
+                        theme::hint(),
+                    ),
+                    Span::styled(
+                        "   [↑/↓] pick  [Enter] apply  [Esc] cancel",
+                        theme::hint(),
+                    ),
+                ])
+            }
             Mode::SharePickProvider { entries, selected } => {
                 let mut spans = vec![Span::styled(" Copy link: ", theme::title())];
                 for (i, (name, _)) in entries.iter().enumerate() {
@@ -1200,6 +1295,8 @@ impl SessionDetailScreen {
                         Span::raw(" folder  "),
                         Span::styled("[e]", theme::title()),
                         Span::raw(" config  "),
+                        Span::styled("[S]", theme::title()),
+                        Span::raw(" commands  "),
                         Span::styled("[Esc]", theme::title()),
                         Span::raw(" back"),
                     ]);
@@ -1209,6 +1306,47 @@ impl SessionDetailScreen {
         };
         frame.render_widget(Paragraph::new(footer), outer[2]);
     }
+}
+
+fn render_command_set_picker(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    sets: &[SavedCommandSet],
+    selected: usize,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(" Pick startup command set ", theme::title()));
+
+    let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("None", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled("clear startup commands", theme::hint()),
+    ]))];
+    for s in sets {
+        let count = s.commands.len();
+        items.push(ListItem::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                s.name.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("{count} cmd{}", if count == 1 { "" } else { "s" }),
+                theme::hint(),
+            ),
+        ])));
+    }
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))
+        .highlight_symbol("▶ ");
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn file_name(path: &std::path::Path) -> String {
