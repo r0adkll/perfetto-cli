@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-24
+
 ### Added
 - Session detail `[S]` — swap the startup command set applied to an existing session via a picker listing every saved set (plus `None` to clear). The set matching the session's current commands is pre-highlighted; Enter applies and persists to the DB and `session.json`
 
@@ -183,5 +185,5 @@ Initial release.
 - 🏠 Welcome banner with ASCII logo on empty sessions list
 - 🔧 Release pipeline via cargo-dist with shell installer + Homebrew tap
 
-[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.4.1...v0.5.0[0.4.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.4.0...v0.4.1[0.4.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.1...v0.4.0[0.3.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.0...v0.3.1[0.3.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.2.0...v0.3.0[0.2.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...v0.2.0[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
+[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.5.0...v0.5.1[0.5.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.4.1...v0.5.0[0.4.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.4.0...v0.4.1[0.4.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.1...v0.4.0[0.3.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.0...v0.3.1[0.3.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.2.0...v0.3.0[0.2.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...v0.2.0[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
