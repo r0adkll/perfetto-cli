@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Startup command pickers now allow multiple saved command sets to be selected and merge their commands in displayed order
+
 ## [0.5.1] - 2026-04-24
 
 ### Added

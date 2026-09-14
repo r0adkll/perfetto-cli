@@ -10,7 +10,9 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 
 use crate::cloud::{self, UploadProgress};
 use crate::db::Database;
-use crate::db::command_sets::SavedCommandSet;
+use crate::db::command_sets::{
+    command_sets_matching_commands, merge_selected_command_sets, SavedCommandSet,
+};
 use crate::db::traces::TraceRecord;
 use crate::import::Benchmark;
 use crate::import::benchmark_json;
@@ -81,11 +83,12 @@ enum Mode {
         entries: Vec<(String, String)>, // (provider_name, url)
         selected: usize,
     },
-    /// Pick a saved command set to apply to this session. Index 0 means
-    /// "None" (clear commands); 1..=sets.len() indexes into `sets`.
+    /// Pick saved command sets to merge for this session. The cursor includes
+    /// a leading "None" row, while `checked` tracks each saved set.
     PickCommandSet {
         sets: Vec<SavedCommandSet>,
-        selected: usize,
+        cursor: usize,
+        checked: Vec<bool>,
     },
 }
 
@@ -330,12 +333,16 @@ impl SessionDetailScreen {
             KeyCode::Char('S') => {
                 match db.list_command_sets() {
                     Ok(sets) => {
-                        let selected = sets
+                        let checked = command_sets_matching_commands(
+                            &sets,
+                            &self.session.config.startup_commands,
+                        );
+                        let cursor = checked
                             .iter()
-                            .position(|s| s.commands == self.session.config.startup_commands)
-                            .map(|i| i + 1)
+                            .position(|is_checked| *is_checked)
+                            .map(|index| index + 1)
                             .unwrap_or(0);
-                        self.mode = Mode::PickCommandSet { sets, selected };
+                        self.mode = Mode::PickCommandSet { sets, cursor, checked };
                     }
                     Err(e) => self.set_error(format!("load command sets: {e}")),
                 }
@@ -626,8 +633,11 @@ impl SessionDetailScreen {
     }
 
     fn handle_pick_command_set_key(&mut self, db: &Database, key: KeyEvent) -> DetailAction {
-        let Mode::PickCommandSet { sets, mut selected } =
-            std::mem::replace(&mut self.mode, Mode::Browse)
+        let Mode::PickCommandSet {
+            sets,
+            mut cursor,
+            mut checked,
+        } = std::mem::replace(&mut self.mode, Mode::Browse)
         else {
             return DetailAction::None;
         };
@@ -635,19 +645,33 @@ impl SessionDetailScreen {
         match key.code {
             KeyCode::Esc => {}
             KeyCode::Up | KeyCode::Char('k') => {
-                selected = (selected + total - 1) % total;
-                self.mode = Mode::PickCommandSet { sets, selected };
+                cursor = (cursor + total - 1) % total;
+                self.mode = Mode::PickCommandSet { sets, cursor, checked };
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                selected = (selected + 1) % total;
-                self.mode = Mode::PickCommandSet { sets, selected };
+                cursor = (cursor + 1) % total;
+                self.mode = Mode::PickCommandSet { sets, cursor, checked };
+            }
+            KeyCode::Char(' ') => {
+                if cursor == 0 {
+                    checked.fill(false);
+                } else if let Some(is_checked) = checked.get_mut(cursor - 1) {
+                    *is_checked = !*is_checked;
+                }
+                self.mode = Mode::PickCommandSet { sets, cursor, checked };
             }
             KeyCode::Enter => {
-                let (new_commands, label) = if selected == 0 {
-                    (Vec::new(), "None".to_string())
+                let new_commands = merge_selected_command_sets(&sets, &checked);
+                let selected_names: Vec<&str> = sets
+                    .iter()
+                    .zip(&checked)
+                    .filter(|(_, is_checked)| **is_checked)
+                    .map(|(set, _)| set.name.as_str())
+                    .collect();
+                let label = if selected_names.is_empty() {
+                    "None".to_string()
                 } else {
-                    let s = &sets[selected - 1];
-                    (s.commands.clone(), s.name.clone())
+                    selected_names.join(" + ")
                 };
                 self.session.config.startup_commands = new_commands;
                 if let Some(id) = self.session.id {
@@ -663,7 +687,7 @@ impl SessionDetailScreen {
                 self.set_status(format!("startup commands → {label}"));
             }
             _ => {
-                self.mode = Mode::PickCommandSet { sets, selected };
+                self.mode = Mode::PickCommandSet { sets, cursor, checked };
             }
         }
         DetailAction::None
@@ -983,8 +1007,13 @@ impl SessionDetailScreen {
             meta_area,
         );
 
-        if let Mode::PickCommandSet { sets, selected } = &self.mode {
-            render_command_set_picker(frame, traces_area, sets, *selected);
+        if let Mode::PickCommandSet {
+            sets,
+            cursor,
+            checked,
+        } = &self.mode
+        {
+            render_command_set_picker(frame, traces_area, sets, *cursor, checked);
         } else {
         let title = match &self.tag_filter {
             Some(tag) => format!(" Traces — filter: {tag} "),
@@ -1210,25 +1239,25 @@ impl SessionDetailScreen {
                     ])
                 }
             }
-            Mode::PickCommandSet { sets, selected } => {
-                let label = if *selected == 0 {
+            Mode::PickCommandSet {
+                sets,
+                cursor,
+                checked,
+            } => {
+                let checked_count = checked.iter().filter(|selected| **selected).count();
+                let label = if checked_count == 0 {
                     "None".to_string()
                 } else {
-                    sets.get(*selected - 1)
-                        .map(|s| s.name.clone())
-                        .unwrap_or_else(|| "?".into())
+                    format!("{checked_count} selected")
                 };
                 Line::from(vec![
+                    Span::styled(format!(" commands › {label} "), theme::title()),
                     Span::styled(
-                        format!(" commands › {label} "),
-                        theme::title(),
-                    ),
-                    Span::styled(
-                        format!("({}/{})", selected + 1, 1 + sets.len()),
+                        format!("({}/{})", cursor + 1, 1 + sets.len()),
                         theme::hint(),
                     ),
                     Span::styled(
-                        "   [↑/↓] pick  [Enter] apply  [Esc] cancel",
+                        "   [↑/↓] move  [Space] toggle  [Enter] apply  [Esc] cancel",
                         theme::hint(),
                     ),
                 ])
@@ -1312,22 +1341,28 @@ fn render_command_set_picker(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
     sets: &[SavedCommandSet],
-    selected: usize,
+    cursor: usize,
+    checked: &[bool],
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(" Pick startup command set ", theme::title()));
+        .title(Span::styled(" Pick startup command sets ", theme::title()));
 
+    let none_selected = !checked.iter().any(|selected| *selected);
     let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(if none_selected { "[x] " } else { "[ ] " }),
         Span::styled("None", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("  "),
         Span::styled("clear startup commands", theme::hint()),
     ]))];
-    for s in sets {
+    for (index, s) in sets.iter().enumerate() {
         let count = s.commands.len();
         items.push(ListItem::new(Line::from(vec![
-            Span::raw("  "),
+            Span::raw(if checked.get(index).copied().unwrap_or(false) {
+                "[x] "
+            } else {
+                "[ ] "
+            }),
             Span::styled(
                 s.name.clone(),
                 Style::default().add_modifier(Modifier::BOLD),
@@ -1341,7 +1376,7 @@ fn render_command_set_picker(
     }
 
     let mut state = ListState::default();
-    state.select(Some(selected));
+    state.select(Some(cursor));
     let list = List::new(items)
         .block(block)
         .highlight_style(Style::default().bg(theme::accent()).fg(Color::Black))

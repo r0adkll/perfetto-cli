@@ -11,7 +11,7 @@ use crate::adb;
 use crate::adb::DeviceInfo;
 use crate::config::Paths;
 use crate::db::Database;
-use crate::db::command_sets::SavedCommandSet;
+use crate::db::command_sets::{merge_selected_command_sets, SavedCommandSet};
 use crate::db::configs::SavedConfig;
 use crate::perfetto::TraceConfig;
 use crate::session::Session;
@@ -84,9 +84,11 @@ pub struct NewSessionScreen {
     /// Saved configs available for selection. Index 0 = "Default", rest from DB.
     saved_configs: Vec<SavedConfig>,
     config_state: ListState,
-    /// Saved command sets. Index 0 = "None", rest from DB.
+    /// Saved command sets. The list cursor includes a leading "None" row;
+    /// selections are tracked independently so multiple sets can be merged.
     saved_command_sets: Vec<SavedCommandSet>,
     command_set_state: ListState,
+    selected_command_sets: Vec<bool>,
     /// Info about the currently-highlighted online device.
     device_info: Option<DeviceInfo>,
     device_info_serial: Option<String>,
@@ -109,6 +111,7 @@ impl NewSessionScreen {
         let mut config_state = ListState::default();
         config_state.select(Some(0));
         let saved_command_sets = db.list_command_sets().unwrap_or_default();
+        let selected_command_sets = vec![false; saved_command_sets.len()];
         let mut command_set_state = ListState::default();
         command_set_state.select(Some(0)); // "None" is pre-selected
         let mut screen = Self {
@@ -129,6 +132,7 @@ impl NewSessionScreen {
             config_state,
             saved_command_sets,
             command_set_state,
+            selected_command_sets,
             device_info: None,
             device_info_serial: None,
             error: None,
@@ -455,6 +459,14 @@ impl NewSessionScreen {
                 self.command_set_state
                     .select(Some((cur + total - 1) % total));
             }
+            KeyCode::Char(' ') => {
+                let cursor = self.command_set_state.selected().unwrap_or(0);
+                if cursor == 0 {
+                    self.selected_command_sets.fill(false);
+                } else if let Some(selected) = self.selected_command_sets.get_mut(cursor - 1) {
+                    *selected = !*selected;
+                }
+            }
             KeyCode::Enter => {
                 self.focus = Focus::Submit;
             }
@@ -463,16 +475,9 @@ impl NewSessionScreen {
         WizardAction::None
     }
 
-    /// Returns the selected startup commands. Index 0 = None, 1+ = saved sets.
+    /// Returns the selected sets concatenated in their displayed order.
     fn selected_startup_commands(&self) -> Vec<crate::perfetto::commands::StartupCommand> {
-        match self.command_set_state.selected().unwrap_or(0) {
-            0 => Vec::new(),
-            i => self
-                .saved_command_sets
-                .get(i - 1)
-                .map(|s| s.commands.clone())
-                .unwrap_or_default(),
-        }
+        merge_selected_command_sets(&self.saved_command_sets, &self.selected_command_sets)
     }
 
     /// Returns the TraceConfig for the currently selected config option.
@@ -648,6 +653,10 @@ impl NewSessionScreen {
             Some(msg) => Line::from(Span::styled(
                 format!(" ✗ {msg}"),
                 Style::default().fg(theme::err()),
+            )),
+            None if self.focus == Focus::Commands => Line::from(Span::styled(
+                " ↑/↓ move  •  Space toggles command sets  •  Enter advances  •  Esc cancels",
+                theme::hint(),
             )),
             None => Line::from(Span::styled(
                 " Tab/Shift+Tab to move focus  •  Enter advances  •  Esc cancels",
@@ -905,17 +914,22 @@ impl NewSessionScreen {
             .title(Span::styled(" Startup Commands ", theme::title()))
             .border_style(focus_style(focused));
 
+        let none_selected = !self.selected_command_sets.iter().any(|selected| *selected);
         let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
-            Span::raw("  "),
+            Span::raw(if none_selected { "[x] " } else { "[ ] " }),
             Span::styled("None", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("  "),
             Span::styled("no startup commands", theme::hint()),
         ]))];
 
-        for s in &self.saved_command_sets {
+        for (index, s) in self.saved_command_sets.iter().enumerate() {
             let count = s.commands.len();
             items.push(ListItem::new(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(if self.selected_command_sets[index] {
+                    "[x] "
+                } else {
+                    "[ ] "
+                }),
                 Span::styled(
                     s.name.clone(),
                     Style::default().add_modifier(Modifier::BOLD),
