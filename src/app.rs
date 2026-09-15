@@ -379,6 +379,7 @@ impl App {
                     let editor = ConfigEditorScreen::new(
                         session.id,
                         session.name.clone(),
+                        Some(session.package_name.clone()),
                         &session.config,
                     );
                     self.screen = Screen::ConfigEditor(editor);
@@ -471,8 +472,11 @@ impl App {
                     EditorAction::Cancel => {
                         self.return_from_editor();
                     }
-                    EditorAction::Save(new_config) => {
-                        self.save_editor_config(&new_config);
+                    EditorAction::Save {
+                        config,
+                        package_name,
+                    } => {
+                        self.save_editor_config(&config, package_name.as_deref());
                         self.return_from_editor();
                     }
                     EditorAction::None => {}
@@ -482,7 +486,7 @@ impl App {
                 ConfigListAction::Back => self.return_to_sessions_list(),
                 ConfigListAction::Edit(id, name, config) => {
                     self.editor_context = Some(EditorContext::SavedConfig(id));
-                    let editor = ConfigEditorScreen::new(Some(id), name, &config);
+                    let editor = ConfigEditorScreen::new(Some(id), name, None, &config);
                     self.screen = Screen::ConfigEditor(editor);
                 }
                 ConfigListAction::CreateNew(name) => {
@@ -490,6 +494,7 @@ impl App {
                     let editor = ConfigEditorScreen::new(
                         None,
                         name,
+                        None,
                         &crate::perfetto::TraceConfig::default(),
                     );
                     self.screen = Screen::ConfigEditor(editor);
@@ -577,10 +582,18 @@ impl App {
         }
     }
 
-    fn save_editor_config(&self, config: &crate::perfetto::TraceConfig) {
+    fn save_editor_config(
+        &self,
+        config: &crate::perfetto::TraceConfig,
+        package_name: Option<&str>,
+    ) {
         match &self.editor_context {
             Some(EditorContext::Session(id)) => {
-                if let Err(e) = self.save_session_config(*id, config) {
+                let Some(package_name) = package_name else {
+                    tracing::error!("session editor save missing package name");
+                    return;
+                };
+                if let Err(e) = self.save_session_config(*id, package_name, config) {
                     tracing::error!(?e, "failed to save session config");
                 }
             }
@@ -612,8 +625,13 @@ impl App {
         }
     }
 
-    fn save_session_config(&self, id: i64, config: &crate::perfetto::TraceConfig) -> Result<()> {
-        self.db.update_session_config(id, config)?;
+    fn save_session_config(
+        &self,
+        id: i64,
+        package_name: &str,
+        config: &crate::perfetto::TraceConfig,
+    ) -> Result<()> {
+        self.db.update_session(id, package_name, config)?;
         if let Some(session) = self
             .db
             .list_sessions()?
