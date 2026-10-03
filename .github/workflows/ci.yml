@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # build.rs requires these at compile time. Placeholders are enough to build
+  # and test; real values are only injected by the release workflow.
+  PERFETTO_GOOGLE_CLIENT_ID: ci-placeholder
+  PERFETTO_GOOGLE_CLIENT_SECRET: ci-placeholder
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets
