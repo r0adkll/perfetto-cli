@@ -3,7 +3,10 @@ use chrono::Utc;
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
-use super::{ConfigOverrides, Ctx, SessionView, TraceView, resolve_device, resolve_session};
+use super::{
+    ConfigOverrides, Ctx, SessionView, TraceView, resolve_command_sets, resolve_device,
+    resolve_session,
+};
 use crate::db::Database;
 use crate::perfetto::TraceConfig;
 use crate::session::Session;
@@ -20,7 +23,8 @@ pub enum SessionCommand {
     /// Create a session. Defaults to the only online device when --device
     /// is omitted.
     Create(CreateArgs),
-    /// Change a session's device, startup commands, or capture settings.
+    /// Change a session's package, device, startup commands, or capture
+    /// settings.
     Update(UpdateArgs),
 }
 
@@ -38,9 +42,10 @@ pub struct CreateArgs {
     /// Saved trace config to start from (see `perfetto-cli configs`).
     #[arg(long, value_name = "NAME")]
     config: Option<String>,
-    /// Saved startup command set to attach (see `perfetto-cli command-sets`).
-    #[arg(long, value_name = "NAME")]
-    commands: Option<String>,
+    /// Saved startup command set to attach (repeatable; sets merge in the
+    /// order shown by `perfetto-cli command-sets`).
+    #[arg(long = "commands", value_name = "NAME")]
+    commands: Vec<String>,
     /// Return the existing session with this name instead of failing.
     #[arg(long)]
     if_not_exists: bool,
@@ -52,12 +57,16 @@ pub struct CreateArgs {
 pub struct UpdateArgs {
     /// Session id, name, or folder slug.
     session: String,
+    /// Change the target app package.
+    #[arg(long)]
+    package: Option<String>,
     /// adb serial of the device to capture on.
     #[arg(long)]
     device: Option<String>,
-    /// Replace the startup commands with a saved command set.
-    #[arg(long, value_name = "NAME", conflicts_with = "clear_commands")]
-    commands: Option<String>,
+    /// Replace the startup commands with saved command sets (repeatable;
+    /// sets merge in the order shown by `perfetto-cli command-sets`).
+    #[arg(long = "commands", value_name = "NAME", conflicts_with = "clear_commands")]
+    commands: Vec<String>,
     /// Remove all startup commands.
     #[arg(long)]
     clear_commands: bool,
@@ -79,7 +88,7 @@ fn session_view(db: &Database, s: &Session) -> Result<SessionView> {
         Some(id) => db.list_traces(id)?.len(),
         None => 0,
     };
-    Ok(SessionView::new(s, count))
+    Ok(SessionView::new(s, count, &db.list_command_sets()?))
 }
 
 fn list(ctx: &Ctx) -> Result<()> {
@@ -107,7 +116,7 @@ fn show(ctx: &Ctx, selector: &str) -> Result<()> {
     let session = resolve_session(&ctx.db, selector)?;
     let traces = ctx.db.list_traces(session.id.unwrap_or_default())?;
     let detail = Detail {
-        session: SessionView::new(&session, traces.len()),
+        session: session_view(&ctx.db, &session)?,
         traces: traces.iter().map(TraceView::from).collect(),
     };
     ctx.emit(&detail, || {
@@ -151,8 +160,8 @@ async fn create(ctx: &Ctx, args: CreateArgs) -> Result<()> {
         Some(config_name) => saved_config(&ctx.db, config_name)?,
         None => TraceConfig::default(),
     };
-    if let Some(set_name) = &args.commands {
-        config.startup_commands = saved_command_set(&ctx.db, set_name)?;
+    if !args.commands.is_empty() {
+        config.startup_commands = resolve_command_sets(&ctx.db, &args.commands)?;
     }
     args.overrides.apply(&mut config)?;
 
@@ -175,7 +184,7 @@ async fn create(ctx: &Ctx, args: CreateArgs) -> Result<()> {
     session.ensure_filesystem().context("create session folder")?;
     session.id = Some(ctx.db.create_session(&session)?);
 
-    let view = SessionView::new(&session, 0);
+    let view = session_view(&ctx.db, &session)?;
     ctx.emit(&view, || {
         println!("Created session:");
         view.print_detail();
@@ -189,6 +198,14 @@ async fn update(ctx: &Ctx, args: UpdateArgs) -> Result<()> {
     }
     let id = session.id.context("session has no id")?;
 
+    if let Some(package) = &args.package {
+        let package = package.trim();
+        if package.is_empty() {
+            bail!("--package must be non-empty");
+        }
+        session.package_name = package.to_string();
+    }
+
     if let Some(serial) = args.device.as_deref() {
         let serial = resolve_device(Some(serial), None).await?;
         ctx.db.upsert_device_seen(&serial, None)?;
@@ -196,14 +213,15 @@ async fn update(ctx: &Ctx, args: UpdateArgs) -> Result<()> {
         session.device_serial = Some(serial);
     }
 
-    if let Some(set_name) = &args.commands {
-        session.config.startup_commands = saved_command_set(&ctx.db, set_name)?;
+    if !args.commands.is_empty() {
+        session.config.startup_commands = resolve_command_sets(&ctx.db, &args.commands)?;
     }
     if args.clear_commands {
         session.config.startup_commands.clear();
     }
     args.overrides.apply(&mut session.config)?;
-    ctx.db.update_session_config(id, &session.config)?;
+    ctx.db
+        .update_session(id, &session.package_name, &session.config)?;
     session.ensure_filesystem()?;
 
     let view = session_view(&ctx.db, &session)?;
@@ -219,17 +237,4 @@ fn saved_config(db: &Database, name: &str) -> Result<TraceConfig> {
         .find(|c| c.name.eq_ignore_ascii_case(name))
         .map(|c| c.config)
         .with_context(|| format!("no saved config named '{name}' (see `perfetto-cli configs`)"))
-}
-
-fn saved_command_set(
-    db: &Database,
-    name: &str,
-) -> Result<Vec<crate::perfetto::commands::StartupCommand>> {
-    db.list_command_sets()?
-        .into_iter()
-        .find(|c| c.name.eq_ignore_ascii_case(name))
-        .map(|c| c.commands)
-        .with_context(|| {
-            format!("no startup command set named '{name}' (see `perfetto-cli command-sets`)")
-        })
 }

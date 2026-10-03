@@ -133,15 +133,16 @@ perfetto-cli command-sets                             # saved startup command se
 perfetto-cli session list
 perfetto-cli session show <session>                   # session + its traces
 perfetto-cli session create --name N --package P [--device S] [--config NAME]
-    [--commands SET] [--cold|--warm] [--duration SECS] [--launch-activity A]
+    [--commands SET]... [--cold|--warm] [--duration SECS] [--launch-activity A]
     [--if-not-exists]
-perfetto-cli session update <session> [--device S] [--commands SET | --clear-commands]
+perfetto-cli session update <session> [--package P] [--device S]
+    [--commands SET... | --clear-commands]
     [--cold|--warm] [--duration SECS] [--launch-activity A]
 
 perfetto-cli capture <session> [--name STEM] [--tag T]... [--device S]
     [--cold|--warm] [--duration SECS] [--open] [--upload [--provider ID]]
 perfetto-cli upload <session> [--trace ID]... | [--latest] [--provider ID]
-perfetto-cli open <trace-id | path> [--commands SET] [--timeout SECS]
+perfetto-cli open <trace-id | path> [--commands SET]... [--timeout SECS]
 ```
 
 A typical agent loop — create the session once, then capture and share each run:
@@ -152,7 +153,7 @@ perfetto-cli session create --name "Campfire startup" --package app.campfire.and
 perfetto-cli capture "Campfire startup" --name before-fix --tag baseline --upload --json
 ```
 
-`capture` blocks until perfetto finishes; `Ctrl-C` stops early and keeps the partial trace. Overrides passed to `capture` apply to that run only; on `session create`/`update` they're saved. `--device` defaults to the session's device, else the only online device. Uploads use the default provider picked in the TUI's cloud settings unless `--provider` (`google_drive`, `amazon_s3`) is given; set up credentials in the TUI first. `open` waits for ui.perfetto.dev to fetch the trace, then exits.
+`capture` blocks until perfetto finishes; `Ctrl-C` stops early and keeps the partial trace. Overrides passed to `capture` apply to that run only; on `session create`/`update` they're saved. `--device` defaults to the session's device, else the only online device. `--commands` is repeatable; like the TUI's multi-select picker, sets merge in the order `command-sets` lists them (not argument order), and session JSON reports the matching sets under `command_sets`. Uploads use the default provider picked in the TUI's cloud settings unless `--provider` (`google_drive`, `amazon_s3`) is given; set up credentials in the TUI first. `open` waits for ui.perfetto.dev to fetch the trace, then exits.
 
 ## Theming
 

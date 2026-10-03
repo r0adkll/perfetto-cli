@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde::Serialize;
 
-use super::{Ctx, UploadView, resolve_session};
+use super::{Ctx, UploadView, resolve_command_sets, resolve_session};
 use crate::cloud::{self, UploadProgress};
 use crate::db::traces::TraceRecord;
 use crate::perfetto::capture::Cancel;
@@ -35,9 +35,10 @@ pub struct UploadArgs {
 pub struct OpenArgs {
     /// Trace id, or a path to any `.pftrace` file.
     trace: String,
-    /// Use this saved startup command set instead of the session's.
-    #[arg(long, value_name = "NAME")]
-    commands: Option<String>,
+    /// Use these saved startup command sets instead of the session's
+    /// commands (repeatable; merged in `command-sets` order).
+    #[arg(long = "commands", value_name = "NAME")]
+    commands: Vec<String>,
     /// Seconds to wait for the browser to fetch the trace.
     #[arg(long, value_name = "SECS", default_value_t = DEFAULT_OPEN_TIMEOUT_SECS)]
     timeout: u64,
@@ -141,15 +142,10 @@ pub async fn run_open(ctx: &Ctx, args: OpenArgs) -> Result<()> {
     }
 
     let (path, session_commands) = resolve_trace_target(ctx, &args.trace)?;
-    let commands = match &args.commands {
-        Some(name) => ctx
-            .db
-            .list_command_sets()?
-            .into_iter()
-            .find(|c| c.name.eq_ignore_ascii_case(name))
-            .map(|c| c.commands)
-            .with_context(|| format!("no startup command set named '{name}'"))?,
-        None => session_commands,
+    let commands = if args.commands.is_empty() {
+        session_commands
+    } else {
+        resolve_command_sets(&ctx.db, &args.commands)?
     };
 
     let url = open_in_ui(&path, &commands, args.timeout).await?;

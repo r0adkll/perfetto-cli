@@ -126,7 +126,9 @@ Rules: **stdout carries only the result** (one JSON doc under the global
 through `resolve_session` (id → name → folder slug); devices through
 `resolve_device` (`--device` → session's device → sole online device).
 `ConfigOverrides` is persisted by `session create/update` and ephemeral
-on `capture`. `open` blocks until the browser fetches the trace since the
+on `capture`. Repeatable `--commands` goes through `resolve_command_sets`,
+which reuses `merge_selected_command_sets` (display order) so the TUI's
+`command_sets_matching_commands` can restore the picker's checkmarks. `open` blocks until the browser fetches the trace since the
 process would otherwise exit and drop the `UiServer`.
 
 ### Cold-start capture
@@ -352,7 +354,7 @@ Unit tests live in `#[cfg(test)]` modules at the bottom of each source file
 - `perfetto::capture::tests` — `parse_pid`, `build_component`.
 - `session::tests` — `slugify` edge cases.
 - `cli::tests` — session selector resolution (id/name/slug/ambiguous),
-  `ConfigOverrides::apply`.
+  `ConfigOverrides::apply`, command-set merge order + round-trip.
 - `tui::text_input::tests` — every edit shortcut + word-boundary cases for
   whitespace, `-`, and `_`.
 - `trace_processor::query::tests` — CellsBatch decoder: every cell kind,

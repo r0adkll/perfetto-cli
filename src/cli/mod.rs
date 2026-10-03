@@ -10,7 +10,7 @@ mod resources;
 mod session;
 mod upload;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Args;
 use serde::Serialize;
@@ -19,6 +19,9 @@ use crate::adb::{self, DeviceState};
 use crate::cloud::UploadResult;
 use crate::config::Paths;
 use crate::db::Database;
+use crate::db::command_sets::{
+    SavedCommandSet, command_sets_matching_commands, merge_selected_command_sets,
+};
 use crate::db::traces::{TraceRecord, UploadLinks};
 use crate::perfetto::TraceConfig;
 use crate::perfetto::commands::StartupCommand;
@@ -120,6 +123,24 @@ fn resolve_session(db: &Database, selector: &str) -> Result<Session> {
     }
 }
 
+/// Merge the named saved command sets into one command list. Sets are
+/// concatenated in the TUI's display order (not argument order) so the
+/// session detail picker can recover the selection afterwards.
+fn resolve_command_sets(db: &Database, names: &[String]) -> Result<Vec<StartupCommand>> {
+    let sets = db.list_command_sets()?;
+    let mut selected = vec![false; sets.len()];
+    for name in names {
+        let idx = sets
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(name))
+            .with_context(|| {
+                format!("no startup command set named '{name}' (see `perfetto-cli command-sets`)")
+            })?;
+        selected[idx] = true;
+    }
+    Ok(merge_selected_command_sets(&sets, &selected))
+}
+
 /// Pick the device a capture or new session should use: the explicit
 /// `--device`, else `fallback` (the session's stored device), else the only
 /// online device. The chosen device must be online.
@@ -173,11 +194,20 @@ struct SessionView {
     cold_start: bool,
     launch_activity: Option<String>,
     startup_commands: Vec<StartupCommand>,
+    /// Saved sets whose concatenation equals `startup_commands`; empty when
+    /// the commands don't map exactly onto saved sets.
+    command_sets: Vec<String>,
     trace_count: usize,
 }
 
 impl SessionView {
-    fn new(s: &Session, trace_count: usize) -> Self {
+    fn new(s: &Session, trace_count: usize, sets: &[SavedCommandSet]) -> Self {
+        let command_sets = command_sets_matching_commands(sets, &s.config.startup_commands)
+            .into_iter()
+            .zip(sets)
+            .filter(|(selected, _)| *selected)
+            .map(|(_, set)| set.name.clone())
+            .collect();
         Self {
             id: s.id.unwrap_or_default(),
             name: s.name.clone(),
@@ -190,6 +220,7 @@ impl SessionView {
             cold_start: s.config.cold_start,
             launch_activity: s.config.launch_activity.clone(),
             startup_commands: s.config.startup_commands.clone(),
+            command_sets,
             trace_count,
         }
     }
@@ -217,7 +248,15 @@ impl SessionView {
                 .map(|a| format!(" ({a})"))
                 .unwrap_or_default(),
         );
-        println!("  commands:  {} startup command(s)", self.startup_commands.len());
+        let sets = if self.command_sets.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", self.command_sets.join(" + "))
+        };
+        println!(
+            "  commands:  {} startup command(s){sets}",
+            self.startup_commands.len()
+        );
     }
 }
 
@@ -353,6 +392,44 @@ mod tests {
         let db = db_with(&["Run", "run"]);
         let err = resolve_session(&db, "RUN").unwrap_err().to_string();
         assert!(err.contains("multiple sessions"), "{err}");
+    }
+
+    #[test]
+    fn command_sets_merge_in_display_order_and_round_trip() {
+        let db = db_with(&[]);
+        let cmd = |id: &str| StartupCommand {
+            id: id.into(),
+            args: Vec::new(),
+        };
+        db.create_command_set("Tracks", &[cmd("pin")]).unwrap();
+        db.create_command_set("Queries", &[cmd("query")]).unwrap();
+        // Bump "Tracks" so it sorts first (list order is updated_at DESC).
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.update_command_set(1, &[cmd("pin")]).unwrap();
+
+        let merged =
+            resolve_command_sets(&db, &["queries".into(), "TRACKS".into()]).unwrap();
+        assert_eq!(merged, vec![cmd("pin"), cmd("query")]);
+        assert!(resolve_command_sets(&db, &["nope".into()]).is_err());
+
+        let session = Session {
+            id: Some(1),
+            name: "s".into(),
+            package_name: "p".into(),
+            device_serial: None,
+            config: TraceConfig {
+                startup_commands: merged,
+                ..TraceConfig::default()
+            },
+            folder_path: "/s".into(),
+            created_at: Utc::now(),
+            notes: None,
+            is_imported: false,
+            benchmark_json_path: None,
+            import_source_dir: None,
+        };
+        let view = SessionView::new(&session, 0, &db.list_command_sets().unwrap());
+        assert_eq!(view.command_sets, vec!["Tracks", "Queries"]);
     }
 
     #[test]
