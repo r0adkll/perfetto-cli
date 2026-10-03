@@ -102,6 +102,15 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_session_device(&self, id: i64, serial: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE sessions SET device_serial = ?1 WHERE id = ?2",
+            params![serial, id],
+        )?;
+        Ok(())
+    }
+
     pub fn update_session_config(&self, id: i64, config: &TraceConfig) -> Result<()> {
         let conn = self.lock();
         let config_json = serde_json::to_string(config)?;

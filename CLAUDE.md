@@ -23,6 +23,7 @@ under `~/.config/perfetto-cli/`:
 ```
 src/
 ├── adb/              # async adb wrapper (list_live_devices, run, list_installed_packages)
+├── cli/              # headless subcommands (session/capture/upload/open/…) — see "Headless CLI"
 ├── perfetto/
 │   ├── config.rs     # TraceConfig struct + FillPolicy enum
 │   ├── presets.rs    # Preset enum with 4 variants
@@ -114,6 +115,19 @@ cp ../../.env .
   `config_import::ConfigImportScreen::on_paste` for the pattern).
 
 ## Key flows
+
+### Headless CLI
+
+`src/cli/` exposes the capture loop without the TUI for scripts and
+agents. Handlers reuse the same engines as the TUI — `capture::run`,
+`cloud::upload::upload_traces`, `UiServer` — and must not fork them.
+Rules: **stdout carries only the result** (one JSON doc under the global
+`--json`, via `Ctx::emit`); logs/progress go to stderr. Sessions resolve
+through `resolve_session` (id → name → folder slug); devices through
+`resolve_device` (`--device` → session's device → sole online device).
+`ConfigOverrides` is persisted by `session create/update` and ephemeral
+on `capture`. `open` blocks until the browser fetches the trace since the
+process would otherwise exit and drop the `UiServer`.
 
 ### Cold-start capture
 
@@ -337,6 +351,8 @@ Unit tests live in `#[cfg(test)]` modules at the bottom of each source file
   `track_event` gate, escape sequences.
 - `perfetto::capture::tests` — `parse_pid`, `build_component`.
 - `session::tests` — `slugify` edge cases.
+- `cli::tests` — session selector resolution (id/name/slug/ambiguous),
+  `ConfigOverrides::apply`.
 - `tui::text_input::tests` — every edit shortcut + word-boundary cases for
   whitespace, `-`, and `_`.
 - `trace_processor::query::tests` — CellsBatch decoder: every cell kind,

@@ -14,7 +14,6 @@ pub type UploadLinks = BTreeMap<String, String>;
 #[derive(Debug, Clone)]
 pub struct TraceRecord {
     pub id: i64,
-    #[allow(dead_code)]
     pub session_id: i64,
     pub file_path: PathBuf,
     pub label: Option<String>,

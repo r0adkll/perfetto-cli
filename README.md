@@ -121,6 +121,39 @@ perfetto-cli clear [-y|--yes]         # wipe the local DB and sessions directory
 
 `import` expects the `connected_android_test_additional_output/.../<device>/` folder produced by Macrobenchmark; it copies each `-benchmarkData.json` plus matching iteration traces into a read-only session and shows a benchmark metrics summary (per-metric min/median/max + run count) on session detail.
 
+### Headless commands (scripts & agents)
+
+Everything you'd do in the TUI for a capture loop also works without it. Logs and progress go to stderr; results go to stdout, as a single JSON document with `--json`. Sessions are addressed by id, name (case-insensitive), or folder slug.
+
+```bash
+perfetto-cli devices                                  # adb devices (+ nicknames)
+perfetto-cli configs                                  # saved trace configs
+perfetto-cli command-sets                             # saved startup command sets
+
+perfetto-cli session list
+perfetto-cli session show <session>                   # session + its traces
+perfetto-cli session create --name N --package P [--device S] [--config NAME]
+    [--commands SET] [--cold|--warm] [--duration SECS] [--launch-activity A]
+    [--if-not-exists]
+perfetto-cli session update <session> [--device S] [--commands SET | --clear-commands]
+    [--cold|--warm] [--duration SECS] [--launch-activity A]
+
+perfetto-cli capture <session> [--name STEM] [--tag T]... [--device S]
+    [--cold|--warm] [--duration SECS] [--open] [--upload [--provider ID]]
+perfetto-cli upload <session> [--trace ID]... | [--latest] [--provider ID]
+perfetto-cli open <trace-id | path> [--commands SET] [--timeout SECS]
+```
+
+A typical agent loop — create the session once, then capture and share each run:
+
+```bash
+perfetto-cli session create --name "Campfire startup" --package app.campfire.android \
+  --commands "Startup" --cold --duration 5 --if-not-exists --json
+perfetto-cli capture "Campfire startup" --name before-fix --tag baseline --upload --json
+```
+
+`capture` blocks until perfetto finishes; `Ctrl-C` stops early and keeps the partial trace. Overrides passed to `capture` apply to that run only; on `session create`/`update` they're saved. `--device` defaults to the session's device, else the only online device. Uploads use the default provider picked in the TUI's cloud settings unless `--provider` (`google_drive`, `amazon_s3`) is given; set up credentials in the TUI first. `open` waits for ui.perfetto.dev to fetch the trace, then exits.
+
 ## Theming
 
 Press `t` from the home screen to open the theme picker. Search and preview any of the 39 built-in themes provided by [opaline](https://github.com/r0adkll/opaline), or create your own.
