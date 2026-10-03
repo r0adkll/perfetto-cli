@@ -34,6 +34,7 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 | 🔬 | **Local trace analysis** | PerfettoSQL queries via a bundled `trace_processor_shell` — Summary dashboard, SQL REPL, and per-app saved metrics |
 | 📥 | **Macrobenchmark import** | `perfetto-cli import <dir>` turns a Macrobenchmark output directory into read-only sessions, one per `@Test` method |
 | ☁️ | **Cloud upload** | Upload traces to Google Drive or Amazon S3 with progress, cancellation, and shareable links |
+| 🤖 | **Headless CLI + agent skill** | Script sessions, captures, uploads, and opens with JSON output; `skills install` teaches Claude Code, Codex, Gemini CLI, Cursor, and Copilot to use it |
 | 🔀 | **Multi-provider picker** | Choose which cloud provider to upload to or share from when multiple are configured |
 | 🎨 | **Theming** | 39 built-in themes via a searchable picker, plus custom themes in `~/.config/perfetto-cli/themes/` |
 
@@ -120,6 +121,51 @@ perfetto-cli clear [-y|--yes]         # wipe the local DB and sessions directory
 ```
 
 `import` expects the `connected_android_test_additional_output/.../<device>/` folder produced by Macrobenchmark; it copies each `-benchmarkData.json` plus matching iteration traces into a read-only session and shows a benchmark metrics summary (per-metric min/median/max + run count) on session detail.
+
+### Headless commands (scripts & agents)
+
+Everything you'd do in the TUI for a capture loop also works without it. Logs and progress go to stderr; results go to stdout, as a single JSON document with `--json`. Sessions are addressed by id, name (case-insensitive), or folder slug.
+
+```bash
+perfetto-cli devices                                  # adb devices (+ nicknames)
+perfetto-cli configs                                  # saved trace configs
+perfetto-cli command-sets                             # saved startup command sets
+
+perfetto-cli session list
+perfetto-cli session show <session>                   # session + its traces
+perfetto-cli session create --name N --package P [--device S] [--config NAME]
+    [--commands SET]... [--cold|--warm] [--duration SECS] [--launch-activity A]
+    [--if-not-exists]
+perfetto-cli session update <session> [--package P] [--device S]
+    [--commands SET... | --clear-commands]
+    [--cold|--warm] [--duration SECS] [--launch-activity A]
+
+perfetto-cli capture <session> [--name STEM] [--tag T]... [--device S]
+    [--cold|--warm] [--duration SECS] [--open] [--upload [--provider ID]]
+perfetto-cli upload <session> [--trace ID]... | [--latest] [--provider ID]
+perfetto-cli open <trace-id | path> [--commands SET]... [--timeout SECS]
+```
+
+To teach a coding agent this workflow, install the bundled [Agent Skill](https://agentskills.io):
+
+```bash
+perfetto-cli skills install                  # every supported agent, user-wide
+perfetto-cli skills install --agent codex    # just one (repeatable): claude, codex, gemini, cursor, copilot
+perfetto-cli skills install --project        # into the current repo instead, to commit alongside it
+perfetto-cli skills install --dir DIR        # DIR/perfetto-cli, for any other agent's skills folder
+```
+
+Claude Code reads `.claude/skills`; Codex, Gemini CLI, Cursor, and Copilot share `.agents/skills`, so the default writes both. Re-run after upgrading perfetto-cli to refresh the skill.
+
+A typical agent loop — create the session once, then capture and share each run:
+
+```bash
+perfetto-cli session create --name "Campfire startup" --package app.campfire.android \
+  --commands "Startup" --cold --duration 5 --if-not-exists --json
+perfetto-cli capture "Campfire startup" --name before-fix --tag baseline --upload --json
+```
+
+`capture` blocks until perfetto finishes; `Ctrl-C` stops early and keeps the partial trace. Overrides passed to `capture` apply to that run only; on `session create`/`update` they're saved. `--device` defaults to the session's device, else the only online device. `--commands` is repeatable; like the TUI's multi-select picker, sets merge in the order `command-sets` lists them (not argument order), and session JSON reports the matching sets under `command_sets`. Uploads use the default provider picked in the TUI's cloud settings unless `--provider` (`google_drive`, `amazon_s3`) is given; set up credentials in the TUI first. `open` waits for ui.perfetto.dev to fetch the trace, then exits.
 
 ## Theming
 

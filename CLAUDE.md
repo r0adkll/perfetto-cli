@@ -23,6 +23,7 @@ under `~/.config/perfetto-cli/`:
 ```
 src/
 ├── adb/              # async adb wrapper (list_live_devices, run, list_installed_packages)
+├── cli/              # headless subcommands (session/capture/upload/open/…) — see "Headless CLI"
 ├── perfetto/
 │   ├── config.rs     # TraceConfig struct + FillPolicy enum
 │   ├── presets.rs    # Preset enum with 4 variants
@@ -114,6 +115,30 @@ cp ../../.env .
   `config_import::ConfigImportScreen::on_paste` for the pattern).
 
 ## Key flows
+
+### Headless CLI
+
+`src/cli/` exposes the capture loop without the TUI for scripts and
+agents. Handlers reuse the same engines as the TUI — `capture::run`,
+`cloud::upload::upload_traces`, `UiServer` — and must not fork them.
+Rules: **stdout carries only the result** (one JSON doc under the global
+`--json`, via `Ctx::emit`); logs/progress go to stderr. Sessions resolve
+through `resolve_session` (id → name → folder slug); devices through
+`resolve_device` (`--device` → session's device → sole online device).
+`ConfigOverrides` is persisted by `session create/update` and ephemeral
+on `capture`. Repeatable `--commands` goes through `resolve_command_sets`,
+which reuses `merge_selected_command_sets` (display order) so the TUI's
+`command_sets_matching_commands` can restore the picker's checkmarks.
+
+`assets/skills/perfetto-cli/SKILL.md` is the agent skill that
+`perfetto-cli skills install` writes out (embedded via `include_str!`,
+`{{version}}` stamped at install) into each agent's skills root —
+`Agent::skills_root` maps agents to dirs (`.claude/skills` for Claude
+Code, the shared `.agents/skills` for Codex/Gemini/Cursor/Copilot). Keep
+the skill agent-neutral: no tool names specific to one agent. **Any change to headless commands,
+flags, or JSON shape must update that SKILL.md in the same PR** —
+installed agents learn the CLI from it, not from this file. `open` blocks until the browser fetches the trace since the
+process would otherwise exit and drop the `UiServer`.
 
 ### Cold-start capture
 
@@ -337,6 +362,8 @@ Unit tests live in `#[cfg(test)]` modules at the bottom of each source file
   `track_event` gate, escape sequences.
 - `perfetto::capture::tests` — `parse_pid`, `build_component`.
 - `session::tests` — `slugify` edge cases.
+- `cli::tests` — session selector resolution (id/name/slug/ambiguous),
+  `ConfigOverrides::apply`, command-set merge order + round-trip.
 - `tui::text_input::tests` — every edit shortcut + word-boundary cases for
   whitespace, `-`, and `_`.
 - `trace_processor::query::tests` — CellsBatch decoder: every cell kind,

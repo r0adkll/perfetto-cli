@@ -302,7 +302,7 @@ mod tests {
                 CellType::CellNull,
             ],
             vec![42],
-            vec![3.14],
+            vec![2.5],
             Some("hello\0"),
             vec![vec![0xde, 0xad, 0xbe, 0xef]],
             true,
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(out.elapsed_ms, Some(1.5));
         let row = &out.rows[0];
         assert_eq!(row.get("a").unwrap().as_int().unwrap(), 42);
-        assert!((row.get("b").unwrap().as_float().unwrap() - 3.14).abs() < 1e-9);
+        assert!((row.get("b").unwrap().as_float().unwrap() - 2.5).abs() < 1e-9);
         assert_eq!(row.get("c").unwrap().as_str().unwrap(), "hello");
         assert_eq!(row.get("d").unwrap().as_blob().unwrap(), &[0xde, 0xad, 0xbe, 0xef]);
         assert!(row.get("e").unwrap().is_null());
