@@ -16,8 +16,8 @@ cli-clipboard = "0.4.0"
 crossterm = { version = "0.29.0", features = ["event-stream", "bracketed-paste"] }
 directories = "6.0.0"
 futures = "0.3.32"
-ratatui = "0.30.0"
-ratatui-textarea = { version = "0.9.0", features = ["search"] }
+ratatui = "0.30.2"
+ratatui-textarea = { version = "0.9.2", features = ["search"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
@@ -26,7 +26,7 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-opaline = { version = "0.4", features = ["global-state", "discovery", "widgets", "builtin-themes", "ratatui"] }
+opaline = { version = "0.4.2", features = ["global-state", "discovery", "widgets", "builtin-themes", "ratatui"] }
 urlencoding = "2.1.3"
 open = "5"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "query", "form"] }
