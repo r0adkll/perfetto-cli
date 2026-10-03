@@ -62,7 +62,7 @@ Style rules (match the existing file):
 - Stage `CHANGELOG.md`, `README.md` (if touched), plus any uncommitted code changes that belong with this ship. Add files by name; never `git add -A` / `git add .`.
 - If there are already commits on the branch and the only new changes are docs, make a single `docs: update changelog` (or `docs: update changelog and README`) commit.
 - Otherwise, bundle code + docs into one commit with a conventional message that matches the repo's style (see `git log` — short imperative subject, optional body explaining *why*).
-- HEREDOC for the message, ending with the `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` trailer.
+- HEREDOC for the message, ending with the commit attribution trailer your harness supplies, naming the model you are actually running as (e.g. `Co-Authored-By: <your model name> <noreply@anthropic.com>`).
 - Never `--amend`, never `--no-verify`. If a pre-commit hook fails, fix the underlying issue and create a new commit.
 
 ### 5. Push
@@ -76,7 +76,7 @@ Use `gh pr create`. If a PR already exists for this branch (`gh pr view --json u
 
 - Title: short (<70 chars), imperative, matches commit style. Use `$ARGUMENTS` as a hint if given.
 - Body (HEREDOC): a `## Summary` section (1–3 bullets covering the *user-visible* change, mirroring the changelog entries) and a `## Test plan` section (markdown checklist of what the reviewer / you should verify — at minimum `cargo build` and `cargo test`, plus any UI flows you touched).
-- End the body with the `🤖 Generated with [Claude Code](https://claude.com/claude-code)` footer.
+- End the body with the PR attribution footer your harness supplies (e.g. Claude Code's `🤖 Generated with [Claude Code](https://claude.com/claude-code)`).
 
 ### 7. Report
 
