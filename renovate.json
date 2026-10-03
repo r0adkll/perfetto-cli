@@ -1,0 +1,55 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommitsDisabled",
+    ":rebaseStalePrs"
+  ],
+  "timezone": "America/Los_Angeles",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "rangeStrategy": "bump",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "ignorePaths": [".github/workflows/release.yml"],
+  "packageRules": [
+    {
+      "description": "AWS SDK crates release several times a week and must move together",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["aws-*"],
+      "groupName": "AWS SDK"
+    },
+    {
+      "description": "prost runtime and codegen must stay on the same version",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["prost", "prost-build"],
+      "groupName": "prost"
+    },
+    {
+      "description": "TUI stack: ratatui, its backend, and widgets built on it",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["ratatui", "ratatui-*", "crossterm", "opaline"],
+      "groupName": "ratatui"
+    },
+    {
+      "description": "tracing family",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["tracing", "tracing-*"],
+      "groupName": "tracing"
+    },
+    {
+      "description": "Batch non-major Rust updates into one weekly PR",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "rust non-major",
+      "matchPackageNames": ["!aws-*", "!prost", "!prost-build", "!ratatui", "!ratatui-*", "!crossterm", "!opaline", "!tracing", "!tracing-*"]
+    },
+    {
+      "description": "GitHub Actions in hand-written workflows",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    }
+  ]
+}

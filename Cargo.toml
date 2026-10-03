@@ -18,7 +18,7 @@ directories = "6.0.0"
 futures = "0.3.32"
 ratatui = "0.30.0"
 ratatui-textarea = { version = "0.9.0", features = ["search"] }
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tiny_http = "0.12.0"
@@ -29,20 +29,20 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 opaline = { version = "0.4", features = ["global-state", "discovery", "widgets", "builtin-themes", "ratatui"] }
 urlencoding = "2.1.3"
 open = "5"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "query", "form"] }
 async-trait = "0.1"
-rand = "0.9"
-base64 = "0.22"
-sha2 = "0.10"
+rand = "0.10"
+base64 = "0.23"
+sha2 = "0.11"
 webbrowser = "1.2.0"
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio", "sso"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
-prost = "0.13"
+prost = "0.14"
 bytes = "1"
 
 [build-dependencies]
-prost-build = "0.13"
+prost-build = "0.14"
 # Ships a bundled `protoc` binary so building from source doesn't require a
 # system install. Selected at compile time for the host triple.
 protoc-bin-vendored = "3"
