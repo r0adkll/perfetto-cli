@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Startup command pickers now allow multiple saved command sets to be selected and merge their commands in displayed order
 
+### Added
+- Existing sessions can change their target package name from the config editor; saving updates both the database and portable `session.json`
+
 ## [0.5.1] - 2026-04-24
 
 ### Added

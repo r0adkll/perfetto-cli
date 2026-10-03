@@ -111,6 +111,23 @@ impl Database {
         )?;
         Ok(())
     }
+
+    /// Update all fields owned by the session config editor in one database
+    /// write so the target package and trace config cannot get out of sync.
+    pub fn update_session(
+        &self,
+        id: i64,
+        package_name: &str,
+        config: &TraceConfig,
+    ) -> Result<()> {
+        let conn = self.lock();
+        let config_json = serde_json::to_string(config)?;
+        conn.execute(
+            "UPDATE sessions SET package_name = ?1, config_json = ?2 WHERE id = ?3",
+            params![package_name, config_json, id],
+        )?;
+        Ok(())
+    }
 }
 
 struct Row {
@@ -125,4 +142,52 @@ struct Row {
     is_imported: bool,
     benchmark_json_path: Option<String>,
     import_source_dir: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
+
+    fn test_db() -> Database {
+        let conn = Connection::open_in_memory().expect("open memory db");
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(include_str!("schema.sql"))
+            .expect("apply schema");
+        Database::from_connection(Arc::new(Mutex::new(conn)))
+    }
+
+    #[test]
+    fn update_session_changes_package_and_config_together() {
+        let db = test_db();
+        let session = Session {
+            id: None,
+            name: "Startup".into(),
+            package_name: "com.example.old".into(),
+            device_serial: None,
+            config: TraceConfig::default(),
+            folder_path: "/tmp/perfetto-cli-test-session".into(),
+            created_at: Utc::now(),
+            notes: None,
+            is_imported: false,
+            benchmark_json_path: None,
+            import_source_dir: None,
+        };
+        let id = db.create_session(&session).unwrap();
+        let mut config = TraceConfig::default();
+        config.duration_ms = 42_000;
+
+        db.update_session(id, "com.example.new", &config).unwrap();
+
+        let updated = db
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == Some(id))
+            .unwrap();
+        assert_eq!(updated.package_name, "com.example.new");
+        assert_eq!(updated.config.duration_ms, 42_000);
+    }
 }
