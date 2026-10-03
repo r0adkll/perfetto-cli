@@ -34,6 +34,7 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 | 🔬 | **Local trace analysis** | PerfettoSQL queries via a bundled `trace_processor_shell` — Summary dashboard, SQL REPL, and per-app saved metrics |
 | 📥 | **Macrobenchmark import** | `perfetto-cli import <dir>` turns a Macrobenchmark output directory into read-only sessions, one per `@Test` method |
 | ☁️ | **Cloud upload** | Upload traces to Google Drive or Amazon S3 with progress, cancellation, and shareable links |
+| 🤖 | **Headless CLI + agent skill** | Script sessions, captures, uploads, and opens with JSON output; `skills install` teaches Claude Code, Codex, Gemini CLI, Cursor, and Copilot to use it |
 | 🔀 | **Multi-provider picker** | Choose which cloud provider to upload to or share from when multiple are configured |
 | 🎨 | **Theming** | 39 built-in themes via a searchable picker, plus custom themes in `~/.config/perfetto-cli/themes/` |
 
