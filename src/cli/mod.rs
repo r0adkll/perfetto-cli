@@ -69,6 +69,13 @@ pub struct ConfigOverrides {
     /// Activity to launch on cold start (`.MainActivity` or `pkg/class`).
     #[arg(long, value_name = "ACTIVITY")]
     launch_activity: Option<String>,
+    /// Also collect the app's androidx.tracing:tracing-wire in-process
+    /// traces, bundled with the system trace into a `.tar`.
+    #[arg(long, conflicts_with = "no_in_process")]
+    in_process: bool,
+    /// Don't collect in-process traces.
+    #[arg(long)]
+    no_in_process: bool,
 }
 
 impl ConfigOverrides {
@@ -84,6 +91,12 @@ impl ConfigOverrides {
         }
         if self.warm {
             cfg.cold_start = false;
+        }
+        if self.in_process {
+            cfg.in_process_tracing = true;
+        }
+        if self.no_in_process {
+            cfg.in_process_tracing = false;
         }
         if let Some(activity) = &self.launch_activity {
             let trimmed = activity.trim();
@@ -194,6 +207,7 @@ struct SessionView {
     imported: bool,
     duration_ms: u32,
     cold_start: bool,
+    in_process_tracing: bool,
     launch_activity: Option<String>,
     startup_commands: Vec<StartupCommand>,
     /// Saved sets whose concatenation equals `startup_commands`; empty when
@@ -220,6 +234,7 @@ impl SessionView {
             imported: s.is_imported,
             duration_ms: s.config.duration_ms,
             cold_start: s.config.cold_start,
+            in_process_tracing: s.config.in_process_tracing,
             launch_activity: s.config.launch_activity.clone(),
             startup_commands: s.config.startup_commands.clone(),
             command_sets,
@@ -242,9 +257,10 @@ impl SessionView {
         self.print_line();
         println!("  folder:    {}", self.folder);
         println!(
-            "  capture:   {:.1}s {}{}",
+            "  capture:   {:.1}s {}{}{}",
             self.duration_ms as f64 / 1000.0,
             if self.cold_start { "cold start" } else { "warm" },
+            if self.in_process_tracing { " + in-process" } else { "" },
             self.launch_activity
                 .as_deref()
                 .map(|a| format!(" ({a})"))
@@ -441,20 +457,24 @@ mod tests {
             duration: Some(2.5),
             cold: true,
             launch_activity: Some(" .Main ".into()),
+            in_process: true,
             ..Default::default()
         };
         o.apply(&mut cfg).unwrap();
         assert_eq!(cfg.duration_ms, 2500);
         assert!(cfg.cold_start);
+        assert!(cfg.in_process_tracing);
         assert_eq!(cfg.launch_activity.as_deref(), Some(".Main"));
 
         let o = ConfigOverrides {
             warm: true,
             launch_activity: Some(String::new()),
+            no_in_process: true,
             ..Default::default()
         };
         o.apply(&mut cfg).unwrap();
         assert!(!cfg.cold_start);
+        assert!(!cfg.in_process_tracing);
         assert_eq!(cfg.launch_activity, None);
 
         let bad = ConfigOverrides {

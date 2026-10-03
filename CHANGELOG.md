@@ -9,13 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Startup command pickers now allow multiple saved command sets to be selected and merge their commands in displayed order
+- Local analysis now uses `trace_processor_shell` v58.2 (was v54.0); existing installs re-download it once on the next analysis
 
 ### Added
 - Existing sessions can change their target package name from the config editor; saving updates both the database and portable `session.json`
 - **Headless CLI for scripts and agents** — `devices`, `configs`, `command-sets`, `session list|show|create|update`, `capture`, `upload`, and `open` subcommands drive the full capture loop without the TUI. Logs go to stderr; results go to stdout, as a single JSON document with the global `--json` flag. Sessions are addressed by id, name, or folder slug; `session create --if-not-exists` makes setup idempotent; `capture` supports `--name`, repeatable `--tag`, per-run `--cold`/`--warm`/`--duration` overrides, `--open`, and `--upload`, and stops early with the partial trace kept on `Ctrl-C`; repeatable `--commands` merges saved startup command sets in the same order as the TUI picker
+- **In-process tracing** — a new session toggle (and `--in-process` / `--no-in-process` on `session create|update` and `capture`) collects the app's [`androidx.tracing:tracing-wire`](https://developer.android.com/topic/performance/tracing/in-process-tracing) traces alongside the system trace, including on cold starts. Captures with in-process data are saved as a `.tar` bundle that ui.perfetto.dev and the Analysis screen open as one merged timeline; apps without the library fall back to a plain `.pftrace` with a warning
 - `perfetto-cli skills install` — installs a bundled Agent Skill (`SKILL.md`) that teaches coding agents the capture workflow. Defaults to user-wide `~/.claude/skills` (Claude Code) and `~/.agents/skills` (Codex, Gemini CLI, Cursor, Copilot); `--agent` narrows the targets, `--project` installs into the current repo, and `--dir` covers any other agent
 
 ### Fixed
+- Local analysis failing to load traces from recent Android releases (`Field message_queue is re-introduced with different type`)
 - CI clippy failure from the `approx_constant` lint on a test fixture float
 
 ## [0.5.1] - 2026-04-24

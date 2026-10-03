@@ -122,6 +122,10 @@ pub struct TraceConfig {
     pub auto_open: bool,
     #[serde(default = "yes")]
     pub compose_tracing: bool,
+    /// Collect `androidx.tracing:tracing-wire` (Tracing 2.0) in-process
+    /// traces alongside the system trace and bundle them into one archive.
+    #[serde(default)]
+    pub in_process_tracing: bool,
     #[serde(default)]
     pub launch_activity: Option<String>,
 
@@ -208,6 +212,7 @@ impl Default for TraceConfig {
             cold_start: false,
             auto_open: true,
             compose_tracing: true,
+            in_process_tracing: false,
             launch_activity: None,
             atrace_categories: default_atrace_categories(),
             atrace_apps: Vec::new(),

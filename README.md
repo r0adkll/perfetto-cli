@@ -28,6 +28,7 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 | 🎬 | **Capture engine** | Ported from Google's `record_android_trace`, with `Ctrl-C` cancellation and partial-trace pull |
 | 🚀 | **Cold-start support** | Force-stop, trace, launch, with deferred Compose broadcast |
 | 🎨 | **Compose tracing** | `track_event` data source + `ENABLE_TRACING` broadcast |
+| 🧵 | **In-process tracing** | Collects [`androidx.tracing:tracing-wire`](https://developer.android.com/topic/performance/tracing/in-process-tracing) app traces and bundles them with the system trace into a `.tar` that opens as one merged timeline |
 | 🏷️ | **Trace management** | Rename, tag, delete, filter by tag |
 | 🌐 | **ui.perfetto.dev handoff** | One-key open via a short-lived local HTTP server with optional startup commands |
 | 🧩 | **Startup commands** | Build reusable command sets from a 14-command catalog and pass them to the Perfetto UI on open |
@@ -86,7 +87,7 @@ Press `e` on any session. The editor mirrors the [perfetto recorder UI](https://
 
 | Section | What it controls |
 |---|---|
-| **Session** | Target package name, cold start, auto-open, Compose tracing, launch activity |
+| **Session** | Target package name, cold start, auto-open, Compose tracing, in-process tracing, launch activity |
 | **Recording** | Duration, buffer size, fill policy |
 | **CPU** | Coarse usage polling, scheduling details, frequency/idle, syscalls |
 | **GPU** | Frequency, memory, work period |
@@ -135,13 +136,15 @@ perfetto-cli session list
 perfetto-cli session show <session>                   # session + its traces
 perfetto-cli session create --name N --package P [--device S] [--config NAME]
     [--commands SET]... [--cold|--warm] [--duration SECS] [--launch-activity A]
-    [--if-not-exists]
+    [--in-process|--no-in-process] [--if-not-exists]
 perfetto-cli session update <session> [--package P] [--device S]
     [--commands SET... | --clear-commands]
     [--cold|--warm] [--duration SECS] [--launch-activity A]
+    [--in-process|--no-in-process]
 
 perfetto-cli capture <session> [--name STEM] [--tag T]... [--device S]
-    [--cold|--warm] [--duration SECS] [--open] [--upload [--provider ID]]
+    [--cold|--warm] [--duration SECS] [--in-process|--no-in-process]
+    [--open] [--upload [--provider ID]]
 perfetto-cli upload <session> [--trace ID]... | [--latest] [--provider ID]
 perfetto-cli open <trace-id | path> [--commands SET]... [--timeout SECS]
 ```
@@ -193,7 +196,8 @@ Your selected theme persists across sessions.
     └── <slug>/
         ├── session.json   # Portable session snapshot
         └── traces/
-            └── 2026-04-12_09-15-30.pftrace
+            ├── 2026-04-12_09-15-30.pftrace
+            └── 2026-04-12_10-02-11.tar   # system + in-process traces
 ```
 
 ## Project layout

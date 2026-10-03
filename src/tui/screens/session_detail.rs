@@ -16,7 +16,7 @@ use crate::db::command_sets::{
 use crate::db::traces::TraceRecord;
 use crate::import::Benchmark;
 use crate::import::benchmark_json;
-use crate::perfetto::capture::Cancel;
+use crate::perfetto::capture::{BUNDLE_EXT, Cancel, PFTRACE_EXT};
 use crate::perfetto::textproto;
 use crate::session::Session;
 use crate::tui::chrome;
@@ -30,7 +30,6 @@ use crate::tui::theme;
 /// narrow terminals still look sensible.
 const TWO_PANE_WIDTH: u16 = 120;
 
-const TRACE_EXT: &str = ".pftrace";
 
 pub struct SessionDetailScreen {
     session: Session,
@@ -390,7 +389,7 @@ impl SessionDetailScreen {
                         self.mode = Mode::Browse;
                         return DetailAction::None;
                     } else {
-                        let new_name = format!("{stem}{TRACE_EXT}");
+                        let new_name = format!("{stem}{}", trace_ext(&t.file_path));
                         let new_path = t.file_path.with_file_name(&new_name);
                         // Rename the physical file on disk.
                         if t.file_path != new_path {
@@ -1114,7 +1113,11 @@ impl SessionDetailScreen {
                 Span::styled(" rename › ", theme::title()),
                 Span::raw(buffer.clone()),
                 Span::styled("█", Style::default().fg(theme::accent())),
-                Span::styled(TRACE_EXT, theme::hint()),
+                Span::styled(
+                    self.selected_trace()
+                        .map_or(PFTRACE_EXT, |t| trace_ext(&t.file_path)),
+                    theme::hint(),
+                ),
                 Span::styled(
                     "   [Enter] save  [Esc] cancel  [Alt-⌫] word  [Ctrl-U] clear",
                     theme::hint(),
@@ -1133,7 +1136,7 @@ impl SessionDetailScreen {
                 Span::styled(" capture name › ", theme::title()),
                 Span::raw(buffer.clone()),
                 Span::styled("█", Style::default().fg(theme::accent())),
-                Span::styled(TRACE_EXT, theme::hint()),
+                Span::styled(PFTRACE_EXT, theme::hint()),
                 Span::styled(
                     "   [Enter] start  [Esc] cancel  (empty = timestamp)",
                     theme::hint(),
@@ -1390,14 +1393,27 @@ fn file_name(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
-/// Case-insensitively strip the trailing `.pftrace` extension, if present.
+/// Case-insensitively strip a trailing `.pftrace` / `.tar` extension, if
+/// present.
 fn strip_trace_ext(s: &str) -> &str {
-    if s.len() >= TRACE_EXT.len()
-        && s[s.len() - TRACE_EXT.len()..].eq_ignore_ascii_case(TRACE_EXT)
+    for ext in [PFTRACE_EXT, BUNDLE_EXT] {
+        if s.len() >= ext.len() && s[s.len() - ext.len()..].eq_ignore_ascii_case(ext) {
+            return &s[..s.len() - ext.len()];
+        }
+    }
+    s
+}
+
+/// The extension a trace file keeps across renames: `.tar` for bundles with
+/// in-process traces, `.pftrace` otherwise.
+fn trace_ext(path: &std::path::Path) -> &'static str {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case(&BUNDLE_EXT[1..]))
     {
-        &s[..s.len() - TRACE_EXT.len()]
+        BUNDLE_EXT
     } else {
-        s
+        PFTRACE_EXT
     }
 }
 

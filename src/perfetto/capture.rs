@@ -14,7 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::adb;
 
 use super::TraceConfig;
-use super::textproto;
+use super::{in_process, textproto};
 
 /// Cooperative cancellation handle. The engine checks `is_cancelled` at
 /// natural boundaries and uses `wait` inside `tokio::select!` to break out of
@@ -48,6 +48,12 @@ impl Cancel {
         self.notify.notified().await;
     }
 }
+
+/// Extension of a plain system trace.
+pub const PFTRACE_EXT: &str = ".pftrace";
+/// Extension of a system trace bundled with in-process traces. Trace
+/// Processor and ui.perfetto.dev open the archive as one merged timeline.
+pub const BUNDLE_EXT: &str = ".tar";
 
 /// All the context a capture run needs. Built by the caller from a `Session`.
 #[derive(Debug, Clone)]
@@ -134,12 +140,24 @@ pub async fn run(
         bail!("cancelled before start");
     }
 
+    // In-process tracing is enabled before any force-stop: the enabled bit
+    // is persisted and re-read when the relaunched process initializes,
+    // whereas broadcasting after force-stop would spin the app up early and
+    // spoil the cold start.
+    let in_process_enabled = config.in_process_tracing
+        && in_process::start(&device_serial, &package_name, &tx).await;
+    let mut in_process_floor = None;
+
     if config.cold_start {
         log(&tx, LogLevel::Info, format!("Force-stopping {package_name}"));
         adb::run(&device_serial, &["shell", "am", "force-stop", &package_name])
             .await
             .context("am force-stop failed")?;
         log(&tx, LogLevel::Ok, "force-stop complete".into());
+        if in_process_enabled {
+            // Trace files from the killed process predate this timestamp.
+            in_process_floor = in_process::device_timestamp(&device_serial).await;
+        }
     } else if config.compose_tracing {
         // Warm path: fire the Compose enable broadcast before perfetto so
         // the app is already emitting Trace events by the time the ring
@@ -275,27 +293,65 @@ pub async fn run(
 
     let traces_dir = session_folder.join("traces");
     std::fs::create_dir_all(&traces_dir).context("create traces dir")?;
+
+    // In-process traces are staged next to the session's traces and folded
+    // into a `.tar` bundle with the system trace; without any, the capture
+    // stays a plain `.pftrace`.
+    let staging_dir = traces_dir.join(format!(".staging-{}", Utc::now().timestamp_millis()));
+    let in_process_traces = if in_process_enabled {
+        in_process::collect(
+            &device_serial,
+            &package_name,
+            &staging_dir,
+            in_process_floor.as_deref(),
+            &tx,
+        )
+        .await
+    } else {
+        Vec::new()
+    };
+    let ext = if in_process_traces.is_empty() {
+        PFTRACE_EXT
+    } else {
+        BUNDLE_EXT
+    };
+
     // Default name: `YYYY-MM-DD_HH-MM-SS` — readable at a glance, filesystem-
     // safe, still sorts lexicographically in capture order. A user-supplied
     // stem overrides it; collisions get a `-2`, `-3`, … suffix instead of
     // overwriting an existing file.
     let local_path = match custom_filename.as_deref() {
-        Some(stem) => unique_trace_path(&traces_dir, stem),
-        None => traces_dir.join(format!("{}.pftrace", Utc::now().format("%Y-%m-%d_%H-%M-%S"))),
+        Some(stem) => unique_trace_path(&traces_dir, stem, ext),
+        None => traces_dir.join(format!("{}{ext}", Utc::now().format("%Y-%m-%d_%H-%M-%S"))),
+    };
+    let system_path = if in_process_traces.is_empty() {
+        local_path.clone()
+    } else {
+        staging_dir.join("system.pftrace")
     };
     log(&tx, LogLevel::Info, "Pulling trace from device".into());
-    adb::run(
+    let pulled = adb::run(
         &device_serial,
         &[
             "pull",
             &device_path,
-            local_path
+            system_path
                 .to_str()
                 .context("trace path is not valid UTF-8")?,
         ],
     )
     .await
-    .context("adb pull failed")?;
+    .context("adb pull failed");
+    if pulled.is_err() {
+        let _ = std::fs::remove_dir_all(&staging_dir);
+    }
+    pulled?;
+    if !in_process_traces.is_empty() {
+        log(&tx, LogLevel::Info, "Bundling system + in-process traces".into());
+        let bundled = in_process::bundle(&system_path, &in_process_traces, &local_path);
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        bundled.context("bundle traces")?;
+    }
     log(&tx, LogLevel::Ok, format!("saved to {}", local_path.display()));
 
     // Best-effort cleanup — don't fail the capture over it.
@@ -450,21 +506,21 @@ fn parse_pid(stdout: &str) -> Option<u32> {
         .find_map(|l| l.parse::<u32>().ok())
 }
 
-fn log(tx: &UnboundedSender<CaptureEvent>, level: LogLevel, message: String) {
+pub(super) fn log(tx: &UnboundedSender<CaptureEvent>, level: LogLevel, message: String) {
     let _ = tx.send(CaptureEvent::Log(LogEntry { level, message }));
 }
 
-/// Resolve `<traces_dir>/<stem>.pftrace`, appending `-2`, `-3`, … until the
+/// Resolve `<traces_dir>/<stem><ext>`, appending `-2`, `-3`, … until the
 /// path is free. Mirrors `Session::unique_folder_path` so user-named captures
 /// never silently overwrite an existing trace.
-fn unique_trace_path(traces_dir: &std::path::Path, stem: &str) -> PathBuf {
-    let first = traces_dir.join(format!("{stem}.pftrace"));
+fn unique_trace_path(traces_dir: &std::path::Path, stem: &str, ext: &str) -> PathBuf {
+    let first = traces_dir.join(format!("{stem}{ext}"));
     if !first.exists() {
         return first;
     }
     let mut n: u32 = 2;
     loop {
-        let candidate = traces_dir.join(format!("{stem}-{n}.pftrace"));
+        let candidate = traces_dir.join(format!("{stem}-{n}{ext}"));
         if !candidate.exists() {
             return candidate;
         }
@@ -516,7 +572,7 @@ mod tests {
             Utc::now().timestamp_nanos_opt().unwrap_or_default(),
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = unique_trace_path(&dir, "my-capture");
+        let path = unique_trace_path(&dir, "my-capture", PFTRACE_EXT);
         assert_eq!(path, dir.join("my-capture.pftrace"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -531,11 +587,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         std::fs::write(dir.join("my-capture.pftrace"), b"").unwrap();
-        let path = unique_trace_path(&dir, "my-capture");
+        let path = unique_trace_path(&dir, "my-capture", PFTRACE_EXT);
         assert_eq!(path, dir.join("my-capture-2.pftrace"));
 
         std::fs::write(dir.join("my-capture-2.pftrace"), b"").unwrap();
-        let path = unique_trace_path(&dir, "my-capture");
+        let path = unique_trace_path(&dir, "my-capture", PFTRACE_EXT);
         assert_eq!(path, dir.join("my-capture-3.pftrace"));
 
         let _ = std::fs::remove_dir_all(&dir);

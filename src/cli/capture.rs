@@ -63,7 +63,11 @@ pub async fn run_capture(ctx: &Ctx, args: CaptureArgs) -> Result<()> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| s.trim_end_matches(".pftrace").replace(' ', "-"));
+        .map(|s| {
+            s.trim_end_matches(".pftrace")
+                .trim_end_matches(".tar")
+                .replace(' ', "-")
+        });
 
     eprintln!(
         "Capturing {} on {device_serial} ({:.1}s, {})",
