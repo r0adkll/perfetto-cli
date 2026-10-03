@@ -8,6 +8,7 @@
 mod capture;
 mod resources;
 mod session;
+mod skills;
 mod upload;
 
 use anyhow::{Context, Result, bail};
@@ -30,6 +31,7 @@ use crate::session::Session;
 pub use capture::{CaptureArgs, run_capture};
 pub use resources::{list_command_sets, list_configs, list_devices};
 pub use session::{SessionCommand, run_session};
+pub use skills::{SkillsCommand, run_skills};
 pub use upload::{OpenArgs, UploadArgs, run_open, run_upload};
 
 /// Shared state every subcommand needs.

@@ -145,6 +145,16 @@ perfetto-cli upload <session> [--trace ID]... | [--latest] [--provider ID]
 perfetto-cli open <trace-id | path> [--commands SET]... [--timeout SECS]
 ```
 
+To teach a coding agent this workflow, install the bundled skill:
+
+```bash
+perfetto-cli skills install            # ~/.claude/skills/perfetto-cli (all projects)
+perfetto-cli skills install --project  # ./.claude/skills/perfetto-cli (commit it with your repo)
+perfetto-cli skills install --dir DIR  # DIR/perfetto-cli, for other agents' skills folders
+```
+
+Re-run it after upgrading perfetto-cli to refresh the skill.
+
 A typical agent loop — create the session once, then capture and share each run:
 
 ```bash

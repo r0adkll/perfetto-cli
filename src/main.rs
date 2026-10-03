@@ -72,6 +72,9 @@ enum Command {
     Configs,
     /// List saved startup command sets.
     CommandSets,
+    /// Install the agent skill that teaches coding agents to use this CLI.
+    #[command(subcommand)]
+    Skills(cli::SkillsCommand),
 }
 
 #[tokio::main]
@@ -110,6 +113,7 @@ async fn main() -> Result<()> {
         Command::Open(args) => cli::run_open(&ctx, args).await,
         Command::Configs => cli::list_configs(&ctx),
         Command::CommandSets => cli::list_command_sets(&ctx),
+        Command::Skills(cmd) => cli::run_skills(&ctx, cmd),
         Command::Clear { .. } => unreachable!("handled above"),
     }
 }

@@ -128,7 +128,13 @@ through `resolve_session` (id → name → folder slug); devices through
 `ConfigOverrides` is persisted by `session create/update` and ephemeral
 on `capture`. Repeatable `--commands` goes through `resolve_command_sets`,
 which reuses `merge_selected_command_sets` (display order) so the TUI's
-`command_sets_matching_commands` can restore the picker's checkmarks. `open` blocks until the browser fetches the trace since the
+`command_sets_matching_commands` can restore the picker's checkmarks.
+
+`assets/skills/perfetto-cli/SKILL.md` is the agent skill that
+`perfetto-cli skills install` writes out (embedded via `include_str!`,
+`{{version}}` stamped at install). **Any change to headless commands,
+flags, or JSON shape must update that SKILL.md in the same PR** —
+installed agents learn the CLI from it, not from this file. `open` blocks until the browser fetches the trace since the
 process would otherwise exit and drop the `UiServer`.
 
 ### Cold-start capture
