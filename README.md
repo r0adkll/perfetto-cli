@@ -145,15 +145,16 @@ perfetto-cli upload <session> [--trace ID]... | [--latest] [--provider ID]
 perfetto-cli open <trace-id | path> [--commands SET]... [--timeout SECS]
 ```
 
-To teach a coding agent this workflow, install the bundled skill:
+To teach a coding agent this workflow, install the bundled [Agent Skill](https://agentskills.io):
 
 ```bash
-perfetto-cli skills install            # ~/.claude/skills/perfetto-cli (all projects)
-perfetto-cli skills install --project  # ./.claude/skills/perfetto-cli (commit it with your repo)
-perfetto-cli skills install --dir DIR  # DIR/perfetto-cli, for other agents' skills folders
+perfetto-cli skills install                  # every supported agent, user-wide
+perfetto-cli skills install --agent codex    # just one (repeatable): claude, codex, gemini, cursor, copilot
+perfetto-cli skills install --project        # into the current repo instead, to commit alongside it
+perfetto-cli skills install --dir DIR        # DIR/perfetto-cli, for any other agent's skills folder
 ```
 
-Re-run it after upgrading perfetto-cli to refresh the skill.
+Claude Code reads `.claude/skills`; Codex, Gemini CLI, Cursor, and Copilot share `.agents/skills`, so the default writes both. Re-run after upgrading perfetto-cli to refresh the skill.
 
 A typical agent loop — create the session once, then capture and share each run:
 

@@ -132,7 +132,10 @@ which reuses `merge_selected_command_sets` (display order) so the TUI's
 
 `assets/skills/perfetto-cli/SKILL.md` is the agent skill that
 `perfetto-cli skills install` writes out (embedded via `include_str!`,
-`{{version}}` stamped at install). **Any change to headless commands,
+`{{version}}` stamped at install) into each agent's skills root —
+`Agent::skills_root` maps agents to dirs (`.claude/skills` for Claude
+Code, the shared `.agents/skills` for Codex/Gemini/Cursor/Copilot). Keep
+the skill agent-neutral: no tool names specific to one agent. **Any change to headless commands,
 flags, or JSON shape must update that SKILL.md in the same PR** —
 installed agents learn the CLI from it, not from this file. `open` blocks until the browser fetches the trace since the
 process would otherwise exit and drop the `UiServer`.
