@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-03
+
 ### Changed
 - Startup command pickers now allow multiple saved command sets to be selected and merge their commands in displayed order
 - Local analysis now uses `trace_processor_shell` v58.2 (was v54.0); existing installs re-download it once on the next analysis
@@ -199,5 +201,6 @@ Initial release.
 - 🏠 Welcome banner with ASCII logo on empty sessions list
 - 🔧 Release pipeline via cargo-dist with shell installer + Homebrew tap
 
-[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/r0adkll/perfetto-cli/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.5.0...v0.5.1[0.5.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.4.1...v0.5.0[0.4.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.4.0...v0.4.1[0.4.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.1...v0.4.0[0.3.1]: https://github.com/r0adkll/perfetto-cli/compare/v0.3.0...v0.3.1[0.3.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.2.0...v0.3.0[0.2.0]: https://github.com/r0adkll/perfetto-cli/compare/v0.1.0...v0.2.0[0.1.0]: https://github.com/r0adkll/perfetto-cli/releases/tag/v0.1.0
