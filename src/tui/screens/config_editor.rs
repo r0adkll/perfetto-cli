@@ -174,6 +174,7 @@ enum AndroidToggleTarget {
 
 #[derive(Debug, Clone, Copy)]
 enum TextTarget {
+    PackageName,
     LaunchActivity,
     AtraceApps,
     ExtraFtraceEvents,
@@ -187,6 +188,9 @@ pub struct ConfigEditorScreen {
     #[allow(dead_code)]
     session_id: Option<i64>,
     session_name: String,
+    /// Present only when editing a session. Saved/global configs are not
+    /// associated with a target app, so they do not show this field.
+    package_name: Option<String>,
     config: TraceConfig,
     expanded: HashSet<ProbeGroup>,
     items: Vec<EditorItem>,
@@ -201,14 +205,23 @@ pub struct ConfigEditorScreen {
 pub enum EditorAction {
     None,
     Cancel,
-    Save(TraceConfig),
+    Save {
+        config: TraceConfig,
+        package_name: Option<String>,
+    },
 }
 
 impl ConfigEditorScreen {
-    pub fn new(session_id: Option<i64>, session_name: String, config: &TraceConfig) -> Self {
+    pub fn new(
+        session_id: Option<i64>,
+        session_name: String,
+        package_name: Option<String>,
+        config: &TraceConfig,
+    ) -> Self {
         let mut screen = Self {
             session_id,
             session_name,
+            package_name,
             config: config.clone(),
             expanded: HashSet::new(),
             items: Vec::new(),
@@ -240,6 +253,12 @@ impl ConfigEditorScreen {
         // regardless of whether the config is a custom import or structured.
         self.items
             .push(EditorItem::SectionHeader("── Session ──"));
+        if self.package_name.is_some() {
+            self.items.push(EditorItem::TextField {
+                label: "Package name",
+                target: TextTarget::PackageName,
+            });
+        }
         self.items.push(EditorItem::Toggle {
             label: "Cold start",
             desc: "force-stop + restart the app for a clean startup trace",
@@ -411,7 +430,29 @@ impl ConfigEditorScreen {
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => return EditorAction::Cancel,
             (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
-                return EditorAction::Save(self.config.clone());
+                if let Some(package_name) = &mut self.package_name {
+                    let trimmed = package_name.trim().to_string();
+                    if trimmed.is_empty() {
+                        self.error = Some("Package name is required".into());
+                        if let Some(index) = self.items.iter().position(|item| {
+                            matches!(
+                                item,
+                                EditorItem::TextField {
+                                    target: TextTarget::PackageName,
+                                    ..
+                                }
+                            )
+                        }) {
+                            self.cursor = index;
+                        }
+                        return EditorAction::None;
+                    }
+                    *package_name = trimmed;
+                }
+                return EditorAction::Save {
+                    config: self.config.clone(),
+                    package_name: self.package_name.clone(),
+                };
             }
             (KeyCode::Char('e'), m) if m.contains(KeyModifiers::CONTROL) => {
                 let proto = textproto::build(&self.config);
@@ -508,6 +549,7 @@ impl ConfigEditorScreen {
 
     fn start_editing_text(&mut self, target: TextTarget) {
         self.editing = Some(match target {
+            TextTarget::PackageName => self.package_name.clone().unwrap_or_default(),
             TextTarget::LaunchActivity => self.config.launch_activity.clone().unwrap_or_default(),
             TextTarget::AtraceApps => self.config.atrace_apps.join(", "),
             TextTarget::ExtraFtraceEvents => self.config.advanced.extra_ftrace_events.join(", "),
@@ -526,6 +568,9 @@ impl ConfigEditorScreen {
             EditorItem::TextField { target, .. } | EditorItem::SubTextField { target, .. } => {
                 let trimmed = buffer.trim();
                 match target {
+                    TextTarget::PackageName => {
+                        self.package_name = Some(trimmed.to_string());
+                    }
                     TextTarget::LaunchActivity => {
                         self.config.launch_activity =
                             if trimmed.is_empty() { None } else { Some(trimmed.into()) };
@@ -903,6 +948,7 @@ impl ConfigEditorScreen {
                     format!("{}█", self.editing.as_deref().unwrap_or(""))
                 } else {
                     match target {
+                        TextTarget::PackageName => self.package_name.clone().unwrap_or_default(),
                         TextTarget::LaunchActivity => self.config.launch_activity.as_deref().unwrap_or("(auto)").into(),
                         _ => String::new(),
                     }
@@ -1014,4 +1060,85 @@ impl ConfigEditorScreen {
 
 fn split_csv(s: &str) -> Vec<String> {
     s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctrl_s() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn session_editor_saves_trimmed_package_name() {
+        let mut screen = ConfigEditorScreen::new(
+            Some(7),
+            "Startup".into(),
+            Some("com.example.old".into()),
+            &TraceConfig::default(),
+        );
+        assert!(matches!(
+            screen.items[screen.cursor],
+            EditorItem::TextField {
+                target: TextTarget::PackageName,
+                ..
+            }
+        ));
+        screen.on_key(key(KeyCode::Enter));
+        screen.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        for ch in "  com.example.new  ".chars() {
+            screen.on_key(key(KeyCode::Char(ch)));
+        }
+        screen.on_key(key(KeyCode::Enter));
+
+        match screen.on_key(ctrl_s()) {
+            EditorAction::Save { package_name, .. } => {
+                assert_eq!(package_name.as_deref(), Some("com.example.new"));
+            }
+            _ => panic!("expected save action"),
+        }
+    }
+
+    #[test]
+    fn session_editor_rejects_empty_package_name() {
+        let mut screen = ConfigEditorScreen::new(
+            Some(7),
+            "Startup".into(),
+            Some("   ".into()),
+            &TraceConfig::default(),
+        );
+
+        assert!(matches!(screen.on_key(ctrl_s()), EditorAction::None));
+        assert_eq!(screen.error.as_deref(), Some("Package name is required"));
+        assert!(matches!(
+            screen.items[screen.cursor],
+            EditorItem::TextField {
+                target: TextTarget::PackageName,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn saved_config_editor_has_no_package_name() {
+        let screen = ConfigEditorScreen::new(
+            Some(3),
+            "Frame timing".into(),
+            None,
+            &TraceConfig::default(),
+        );
+
+        assert!(!screen.items.iter().any(|item| matches!(
+            item,
+            EditorItem::TextField {
+                target: TextTarget::PackageName,
+                ..
+            }
+        )));
+    }
 }

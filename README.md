@@ -85,7 +85,8 @@ Press `e` on any session. The editor mirrors the [perfetto recorder UI](https://
 
 | Section | What it controls |
 |---|---|
-| **Recording** | Duration, buffer size, fill policy, cold start, auto-open, Compose tracing, launch activity |
+| **Session** | Target package name, cold start, auto-open, Compose tracing, launch activity |
+| **Recording** | Duration, buffer size, fill policy |
 | **CPU** | Coarse usage polling, scheduling details, frequency/idle, syscalls |
 | **GPU** | Frequency, memory, work period |
 | **Power** | Battery drain + power rails, board voltages |

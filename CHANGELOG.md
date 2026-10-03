@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Existing sessions can change their target package name from the config editor; saving updates both the database and portable `session.json`
+
 ## [0.5.1] - 2026-04-24
 
 ### Added
