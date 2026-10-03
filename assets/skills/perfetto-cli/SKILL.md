@@ -29,5 +29,6 @@ Label runs so they compare cleanly: `--name before-fix` / `--name after-fix`, an
 - **`open` needs a human at a browser.** `perfetto-cli open <trace-id> --json` launches ui.perfetto.dev, applies the session's startup commands, and waits (default 60s) for the browser to fetch the trace. Use it only when the user wants to look at the trace now.
 - **Startup command sets merge in `command-sets` list order**, whatever order you pass `--commands` in. Session JSON reports the matched sets under `command_sets`.
 - **Session settings persist.** `session update <session> ...` changes package, device, commands, or capture settings for every later capture; prefer per-capture overrides for one-off experiments.
+- **In-process traces.** `--in-process` (on `session create`/`update` or `capture`) also collects the app's `androidx.tracing:tracing-wire` traces and saves a `.tar` bundle that Perfetto opens as one merged timeline. The app must depend on `tracing-wire`; if it doesn't, the capture logs a warning and saves a plain `.pftrace`. Session JSON reports it as `in_process_tracing`.
 - **Imported Macrobenchmark sessions are read-only**; capture into a regular session instead.
 - **Interactive commands.** Running `perfetto-cli` with no subcommand launches a full-screen TUI, and `perfetto-cli clear` deletes every session; run either only when the user asks.

@@ -40,6 +40,7 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-ve
 aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 prost = "0.14"
 bytes = "1"
+tar = { version = "0.4", default-features = false }
 
 [build-dependencies]
 prost-build = "0.14"

@@ -7,7 +7,7 @@
 //! saving with `Alt+S`.
 //!
 //! Adding / removing entries is a code change — no runtime config.
-//! Queries target Perfetto v54's stdlib (our pinned `trace_processor_shell`
+//! Queries target Perfetto v58's stdlib (our pinned `trace_processor_shell`
 //! version). Entries that depend on optional capture sources (Compose
 //! track_event, frame timeline, startup events) degrade to empty
 //! results on traces that don't have them; the REPL surfaces the raw

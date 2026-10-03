@@ -28,6 +28,7 @@ src/
 │   ├── config.rs     # TraceConfig struct + FillPolicy enum
 │   ├── presets.rs    # Preset enum with 4 variants
 │   ├── textproto.rs  # TraceConfig → perfetto textproto string
+│   ├── in_process.rs # tracing-wire in-process traces: broadcasts, pull, .tar bundle
 │   └── capture.rs    # capture::run + Cancel primitive
 ├── session/          # Session struct, slug/unique_folder_path, ensure_filesystem
 ├── db/
@@ -155,6 +156,22 @@ process would otherwise exit and drop the `UiServer`.
 7. On cancel: `adb shell kill -TERM <pid>`, wait up to 5s, pull anyway
 8. `adb pull → <session>/traces/<ISO-timestamp>.pftrace`
 9. Register trace in DB, optionally auto-open in `ui.perfetto.dev`
+
+### In-process tracing (`config.in_process_tracing`)
+
+Drives `androidx.tracing:tracing-wire`'s shell-only
+`ConnectedProfilerTracingReceiver` (see `perfetto/in_process.rs`). `START`
+goes out **before** `force-stop` — the enabled bit is persisted as a
+component-enabled state and re-read when the relaunched process
+initializes, whereas broadcasting after force-stop would spin the app up
+and spoil the cold start. After perfetto exits, `FLUSH_TRACES_GET_PATH`
+copies `*.perfetto-trace` files to the app's external media dir (path
+comes back as the broadcast's result data), we pull them, then `STOP`.
+On cold start, files whose name-timestamp predates the force-stop are
+dropped (left over from the killed process). If anything was pulled, the
+system trace + in-process files are written as `<stem>.tar`, which Trace
+Processor ≥ v58 and ui.perfetto.dev open as one merged timeline; otherwise
+the capture stays a plain `.pftrace`. Every in-process failure is soft.
 
 ### Warm capture
 
@@ -328,7 +345,10 @@ browser dependency for the second.
   bump: change `PINNED_VERSION`, update all five `PlatformArtifact`
   entries (their URLs embed the version) and their SHA-256s — grab fresh
   values from `https://get.perfetto.dev/trace_processor` (it's a Python
-  launcher script with a manifest of platform URLs + hashes).
+  launcher script with a manifest of platform URLs + hashes). A
+  `trace_processor_shell.version` stamp next to the binary makes existing
+  installs re-download after a bump. Must stay ≥ v58 to open `.tar`
+  bundles.
 - **`proto/trace_processor.proto` is a minimal subset** of upstream. The
   real file imports `descriptor.proto`, `metatrace_categories.proto`, and
   `trace_summary/file.proto` for messages we don't use
@@ -361,6 +381,8 @@ Unit tests live in `#[cfg(test)]` modules at the bottom of each source file
 - `perfetto::textproto::tests` — renders defaults, ftrace/apps,
   `track_event` gate, escape sequences.
 - `perfetto::capture::tests` — `parse_pid`, `build_component`.
+- `perfetto::in_process::tests` — `am broadcast` result parsing, trace-file
+  selection + cold-start floor, TAR bundle layout.
 - `session::tests` — `slugify` edge cases.
 - `cli::tests` — session selector resolution (id/name/slug/ambiguous),
   `ConfigOverrides::apply`, command-set merge order + round-trip.

@@ -159,6 +159,7 @@ enum ToggleTarget {
     ColdStart,
     AutoOpen,
     ComposeTracing,
+    InProcessTracing,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -273,6 +274,11 @@ impl ConfigEditorScreen {
             label: "Compose tracing",
             desc: "enable Jetpack Compose recomposition events",
             target: ToggleTarget::ComposeTracing,
+        });
+        self.items.push(EditorItem::Toggle {
+            label: "In-process tracing",
+            desc: "bundle androidx.tracing:tracing-wire app traces with the system trace",
+            target: ToggleTarget::InProcessTracing,
         });
         self.items.push(EditorItem::TextField {
             label: "Launch activity",
@@ -602,6 +608,7 @@ impl ConfigEditorScreen {
             ToggleTarget::ColdStart => &mut self.config.cold_start,
             ToggleTarget::AutoOpen => &mut self.config.auto_open,
             ToggleTarget::ComposeTracing => &mut self.config.compose_tracing,
+            ToggleTarget::InProcessTracing => &mut self.config.in_process_tracing,
         };
         *slot = !*slot;
     }
@@ -934,6 +941,7 @@ impl ConfigEditorScreen {
                     ToggleTarget::ColdStart => self.config.cold_start,
                     ToggleTarget::AutoOpen => self.config.auto_open,
                     ToggleTarget::ComposeTracing => self.config.compose_tracing,
+                    ToggleTarget::InProcessTracing => self.config.in_process_tracing,
                 };
                 let icon = if val { "☑" } else { "☐" };
                 Line::from(vec![

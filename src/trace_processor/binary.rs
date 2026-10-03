@@ -19,7 +19,7 @@ use crate::perfetto::capture::Cancel;
 
 /// Pinned Perfetto release we install `trace_processor_shell` from. Bump this
 /// alongside the URL/SHA table below when updating.
-pub const PINNED_VERSION: &str = "v54.0";
+pub const PINNED_VERSION: &str = "v58.2";
 
 /// Per-platform download metadata.
 struct PlatformArtifact {
@@ -33,24 +33,24 @@ struct PlatformArtifact {
 fn host_artifact() -> Option<PlatformArtifact> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "x86_64") => Some(PlatformArtifact {
-            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v54.0/mac-amd64/trace_processor_shell",
-            sha256: "a15360712875344d8bb8e4c461cd7ce9ec250f71a76f89e6ae327c5185eb4855",
+            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/mac-amd64/trace_processor_shell",
+            sha256: "3927a2767eadd140db3ff4fe0dfbf1bde35c1f56501149cd367f5cee898bef27",
         }),
         ("macos", "aarch64") => Some(PlatformArtifact {
-            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v54.0/mac-arm64/trace_processor_shell",
-            sha256: "23638faac4ca695e86039a01fade05ff4a38ffa89672afc7a4e4077318603507",
+            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/mac-arm64/trace_processor_shell",
+            sha256: "d29864d1ba3b36855527bb1b0ca3aa7f703cdce338b9680bb922c5c151b358fa",
         }),
         ("linux", "x86_64") => Some(PlatformArtifact {
-            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v54.0/linux-amd64/trace_processor_shell",
-            sha256: "a7aa1f738bbe2926a70f0829d00837f5720be8cafe26de78f962094fa24a3da4",
+            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-amd64/trace_processor_shell",
+            sha256: "58042408e6cc861fb1a731c26bb082dc222285561eaa4e12a48a8b2b90dca7b9",
         }),
         ("linux", "aarch64") => Some(PlatformArtifact {
-            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v54.0/linux-arm64/trace_processor_shell",
-            sha256: "53af6216259df603115f1eefa94f034eef9c29cf851df15302ad29160334ca81",
+            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-arm64/trace_processor_shell",
+            sha256: "0e6e0c5452c505c8d46fe472fd196a0d17d963460727e2ce2013b02aa1309555",
         }),
         ("windows", "x86_64") => Some(PlatformArtifact {
-            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v54.0/windows-amd64/trace_processor_shell.exe",
-            sha256: "7138e6f97c562fa063e1ceab1a0221c1c211328a304060aa8899363b07c7e2ab",
+            url: "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/windows-amd64/trace_processor_shell.exe",
+            sha256: "adfa6bad3d72be3ba9b83fa2b17b69fa13b3ab1cad0f42e52b86188bd5f0f997",
         }),
         _ => None,
     }
@@ -81,8 +81,13 @@ pub async fn ensure_binary(
     cancel: Arc<Cancel>,
 ) -> Result<PathBuf> {
     let dest = paths.trace_processor_binary();
+    // Records which release `dest` came from, so bumping `PINNED_VERSION`
+    // replaces an older install instead of trusting it forever.
+    let stamp = dest.with_extension("version");
 
-    if is_executable(&dest) {
+    if is_executable(&dest)
+        && std::fs::read_to_string(&stamp).is_ok_and(|v| v.trim() == PINNED_VERSION)
+    {
         return Ok(dest);
     }
 
@@ -122,6 +127,8 @@ pub async fn ensure_binary(
             dest.display()
         )
     })?;
+    std::fs::write(&stamp, PINNED_VERSION)
+        .with_context(|| format!("write {}", stamp.display()))?;
 
     Ok(dest)
 }
