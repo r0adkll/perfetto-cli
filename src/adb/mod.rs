@@ -1,4 +1,7 @@
+mod activities;
 pub mod device;
+
+pub use activities::list_activities;
 
 use std::collections::HashMap;
 

@@ -185,6 +185,11 @@ impl App {
                     w.on_packages_loaded(result);
                 }
             }
+            AppEvent::ActivitiesLoaded { request_id, result } => {
+                if let Screen::ConfigEditor(editor) = &mut self.screen {
+                    editor.on_activities_loaded(request_id, result);
+                }
+            }
             AppEvent::Capture(ev) => {
                 if let Screen::Capture(c) = &mut self.screen {
                     c.on_capture_event(ev);
@@ -307,6 +312,7 @@ impl App {
         match &mut self.screen {
             Screen::Analysis(a) => a.on_paste(&text),
             Screen::ConfigImport(ci) => ci.on_paste(&text),
+            Screen::ConfigEditor(editor) => editor.on_paste(&text),
             _ => {}
         }
     }
@@ -381,7 +387,8 @@ impl App {
                         session.name.clone(),
                         Some(session.package_name.clone()),
                         &session.config,
-                    );
+                    )
+                    .with_device_serial(session.device_serial.clone());
                     self.screen = Screen::ConfigEditor(editor);
                 }
                 DetailAction::Capture(custom_filename) => {
@@ -471,6 +478,24 @@ impl App {
                 match e.on_key(key) {
                     EditorAction::Cancel => {
                         self.return_from_editor();
+                    }
+                    EditorAction::LoadActivities {
+                        request_id,
+                        serial,
+                        package,
+                    } => {
+                        if let Some(tx) = self.event_tx.clone() {
+                            tokio::spawn(async move {
+                                let result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(15),
+                                    crate::adb::list_activities(serial.as_deref(), &package),
+                                )
+                                    .await
+                                    .map_err(|_| "Activity query timed out; check the device connection".to_string())
+                                    .and_then(|result| result.map_err(|e| e.to_string()));
+                                let _ = tx.send(AppEvent::ActivitiesLoaded { request_id, result });
+                            });
+                        }
                     }
                     EditorAction::Save {
                         config,

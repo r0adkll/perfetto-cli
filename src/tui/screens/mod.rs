@@ -1,3 +1,4 @@
+mod activity_picker;
 pub mod analysis;
 pub mod capture;
 pub mod cloud_providers;

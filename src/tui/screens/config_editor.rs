@@ -7,6 +7,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
+use super::activity_picker::{ActivityPicker, PickerAction};
 use crate::perfetto::config::ATRACE_CATEGORIES;
 use crate::perfetto::{TraceConfig, textproto};
 use crate::tui::chrome;
@@ -201,11 +202,18 @@ pub struct ConfigEditorScreen {
     error: Option<String>,
     status: theme::Status,
     editing: Option<String>,
+    device_serial: Option<String>,
+    activity_picker: Option<ActivityPicker>,
 }
 
 pub enum EditorAction {
     None,
     Cancel,
+    LoadActivities {
+        request_id: u64,
+        serial: Option<String>,
+        package: String,
+    },
     Save {
         config: TraceConfig,
         package_name: Option<String>,
@@ -232,9 +240,32 @@ impl ConfigEditorScreen {
             error: None,
             status: theme::Status::default(),
             editing: None,
+            device_serial: None,
+            activity_picker: None,
         };
         screen.rebuild_items();
         screen
+    }
+
+    pub fn with_device_serial(mut self, serial: Option<String>) -> Self {
+        self.device_serial = serial;
+        self
+    }
+
+    pub fn on_activities_loaded(&mut self, request_id: u64, result: Result<Vec<String>, String>) {
+        if let Some(picker) = &mut self.activity_picker
+            && picker.request_id == request_id
+        {
+            picker.on_loaded(result);
+        }
+    }
+
+    pub fn on_paste(&mut self, text: &str) {
+        if let Some(picker) = &mut self.activity_picker {
+            picker.on_paste(text);
+        } else if let Some(buffer) = &mut self.editing {
+            buffer.push_str(&text.replace(['\n', '\r'], " "));
+        }
     }
 
     #[allow(dead_code)]
@@ -429,6 +460,21 @@ impl ConfigEditorScreen {
         if key.kind != KeyEventKind::Press {
             return EditorAction::None;
         }
+        if let Some(picker) = &mut self.activity_picker {
+            match picker.on_key(key) {
+                PickerAction::Select(activity) => {
+                    self.config.launch_activity = activity;
+                    self.activity_picker = None;
+                }
+                PickerAction::Cancel => self.activity_picker = None,
+                PickerAction::Manual => {
+                    self.activity_picker = None;
+                    self.start_editing_text(TextTarget::LaunchActivity);
+                }
+                PickerAction::None => {}
+            }
+            return EditorAction::None;
+        }
         if self.editing.is_some() {
             return self.handle_edit_key(key);
         }
@@ -504,6 +550,22 @@ impl ConfigEditorScreen {
                 }
                 _ => self.start_editing_number(target),
             },
+            EditorItem::TextField { target: TextTarget::LaunchActivity, .. }
+                if self.package_name.is_some() && matches!(key.code, KeyCode::Enter | KeyCode::Char(' ')) =>
+            {
+                let package = self.package_name.as_deref().unwrap_or_default().trim().to_string();
+                let current = self.config.launch_activity.as_ref().map(|activity| {
+                    if activity.contains('/') { activity.clone() } else { format!("{package}/{activity}") }
+                });
+                let picker = ActivityPicker::new(package.clone(), current);
+                let request_id = picker.request_id;
+                self.activity_picker = Some(picker);
+                return EditorAction::LoadActivities {
+                    request_id,
+                    serial: self.device_serial.clone(),
+                    package,
+                };
+            }
             EditorItem::TextField { target, .. } => {
                 self.start_editing_text(target);
             }
@@ -879,6 +941,9 @@ impl ConfigEditorScreen {
             ])
         };
         frame.render_widget(Paragraph::new(footer), rows[2]);
+        if let Some(picker) = &mut self.activity_picker {
+            picker.render(frame);
+        }
     }
 
     fn render_form(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -1148,5 +1213,62 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    fn activity_editor() -> ConfigEditorScreen {
+        let mut screen = ConfigEditorScreen::new(
+            Some(7), "Startup".into(), Some("com.example".into()), &TraceConfig::default(),
+        ).with_device_serial(Some("device-serial".into()));
+        screen.cursor = screen.items.iter().position(|item| matches!(
+            item, EditorItem::TextField { target: TextTarget::LaunchActivity, .. }
+        )).unwrap();
+        screen
+    }
+
+    #[test]
+    fn activity_picker_loads_for_session_and_saves_selected_component() {
+        let mut screen = activity_editor();
+        let request_id = match screen.on_key(key(KeyCode::Enter)) {
+            EditorAction::LoadActivities { request_id, serial, package } => {
+                assert_eq!(serial.as_deref(), Some("device-serial"));
+                assert_eq!(package, "com.example");
+                request_id
+            }
+            _ => panic!("expected activity query"),
+        };
+        screen.on_activities_loaded(request_id, Ok(vec![
+            "com.example/.MainActivity".into(), "com.example/.SettingsActivity".into(),
+        ]));
+        screen.on_paste("stact");
+        screen.on_key(key(KeyCode::Enter));
+        assert!(screen.activity_picker.is_none());
+        match screen.on_key(ctrl_s()) {
+            EditorAction::Save { config, .. } => assert_eq!(
+                config.launch_activity.as_deref(), Some("com.example/.SettingsActivity"),
+            ),
+            _ => panic!("expected save"),
+        }
+    }
+
+    #[test]
+    fn activity_picker_ignores_old_results_and_cancel_preserves_override() {
+        let mut screen = activity_editor();
+        screen.config.launch_activity = Some(".Main".into());
+        let EditorAction::LoadActivities { request_id, .. } = screen.on_key(key(KeyCode::Enter)) else {
+            panic!("expected query");
+        };
+        screen.on_key(key(KeyCode::Esc));
+        screen.on_key(key(KeyCode::Enter));
+        screen.on_activities_loaded(request_id, Ok(vec!["com.example/.StaleActivity".into()]));
+        screen.on_paste("stale");
+        screen.on_key(key(KeyCode::Enter));
+        assert!(screen.activity_picker.is_some());
+        screen.on_key(key(KeyCode::Esc));
+        assert_eq!(screen.config.launch_activity.as_deref(), Some(".Main"));
+
+        screen.on_key(key(KeyCode::Enter));
+        screen.on_key(key(KeyCode::Up)); // Current override → automatic launch.
+        screen.on_key(key(KeyCode::Enter));
+        assert_eq!(screen.config.launch_activity, None);
     }
 }
