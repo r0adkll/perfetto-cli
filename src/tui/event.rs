@@ -18,6 +18,7 @@ pub enum AppEvent {
     Paste(String),
     DevicesLoaded(Result<Vec<DeviceEntry>, String>),
     PackagesLoaded(Result<Vec<String>, String>),
+    ActivitiesLoaded { request_id: u64, result: Result<Vec<String>, String> },
     DeviceInfoLoaded(Result<DeviceInfo, String>),
     Capture(CaptureEvent),
     CaptureDone(Result<CaptureResult, String>),

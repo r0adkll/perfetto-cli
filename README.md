@@ -100,6 +100,11 @@ Each probe group expands to show sub-options with descriptions. Toggles that hav
 
 `Ctrl-S` saves. `Esc` cancels. `Space` toggles. `Enter` expands groups or starts editing fields. `←` collapses from inside a group.
 
+On a session's **Launch activity** field, `Enter` loads the package's activities
+via ADB from the session's device. Type to fuzzy search, use `↑`/`↓` to move,
+and `Enter` to select. Choose `(auto)` to use the default launcher, `Alt+M`
+for manual entry, or `Esc` to cancel the picker.
+
 ## Local trace analysis
 
 Press `a` on any trace in session detail. The Analysis screen spawns a pinned-version `trace_processor_shell` (downloaded + SHA-256 verified on first use, cached under `~/.config/perfetto-cli/bin/`), parses the trace, and runs PerfettoSQL queries locally — no upload required.
