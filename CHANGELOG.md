@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Headless trace analysis** — `perfetto-cli query <session> [--trace ID|NAME] --sql SQL` runs PerfettoSQL against a captured trace (newest by default) and prints a table, or one JSON document with `columns` and `rows` under `--json`. `--file PATH` (`-` for stdin) reads the SQL from a file, `{{package}}` expands to the session's package, and `--summary` returns the Analysis screen's Summary metrics instead. Uses the same pinned, SHA-256-verified `trace_processor_shell` as the Analysis screen, downloading it or replacing an older cached version first; `.tar` in-process bundles load as one merged trace
 - The bundled agent skill now covers the analysis loop: capture, then `query`, with example PerfettoSQL for main-thread slices and janky frames
 
+### Fixed
+- Long captures no longer lose process names. Process info now records into its own small buffer (1/16th of the main buffer, 256 KB–8 MB, `DISCARD`), so a wrapping ring buffer can't overwrite it. Before, most processes, often the target app included, came out unnamed, which left the Summary's package metrics empty. Applies to every session's next capture; configs imported as raw textproto are unchanged
+- Summary trace duration and the memory sparkline now use the capture's start and stop times instead of `trace_bounds`, which a single app with a skewed clock (e.g. WebView slices stamped hours early) could stretch to days
+
 ## [0.6.0] - 2026-10-03
 
 ### Changed

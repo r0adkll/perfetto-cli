@@ -108,7 +108,9 @@ impl SummaryKey {
             },
             SummaryQuery {
                 key: SummaryKey::TraceDurationNs,
-                sql: "SELECT (end_ts - start_ts) AS dur_ns FROM trace_bounds".into(),
+                sql: format!(
+                    "WITH {CAPTURE_WINDOW_CTE} SELECT (end_ts - start_ts) AS dur_ns FROM win"
+                ),
                 multi_row: false,
             },
             SummaryQuery {
@@ -296,6 +298,19 @@ fn frame_percentiles_sql(package: &str) -> String {
     )
 }
 
+/// `win(start_ts, end_ts)`: when tracing was enabled / disabled, per the
+/// trace's own metadata. `trace_bounds` spans every event in the trace, so
+/// one producer with a skewed clock (e.g. Chromium/WebView `track_event`
+/// slices stamped hours before the capture) stretches it to days. Falls back
+/// to `trace_bounds` for traces without that metadata.
+const CAPTURE_WINDOW_CTE: &str = "win AS ( \
+       SELECT \
+         COALESCE((SELECT int_value FROM metadata WHERE name = 'tracing_started_ns'), \
+                  (SELECT start_ts FROM trace_bounds)) AS start_ts, \
+         COALESCE((SELECT int_value FROM metadata WHERE name = 'tracing_disabled_ns'), \
+                  (SELECT end_ts FROM trace_bounds)) AS end_ts \
+     )";
+
 /// Bucket `mem.rss` samples into 60 time buckets across the trace for a
 /// sparkline-friendly series. Each bucket reports the peak RSS in that
 /// slice of time — captures short allocation spikes without losing them
@@ -304,11 +319,13 @@ fn frame_percentiles_sql(package: &str) -> String {
 fn rss_over_time_sql(package: &str) -> String {
     let pkg = escape_sql_literal(package);
     format!(
-        "SELECT \
-           MIN(60, CAST((c.ts - (SELECT start_ts FROM trace_bounds)) * 60 \
-                        / (SELECT end_ts - start_ts FROM trace_bounds) AS INT)) AS bucket, \
+        "WITH {CAPTURE_WINDOW_CTE} \
+         SELECT \
+           MAX(0, MIN(60, CAST((c.ts - win.start_ts) * 60 \
+                               / (win.end_ts - win.start_ts) AS INT))) AS bucket, \
            MAX(c.value) AS peak \
          FROM counter c \
+         CROSS JOIN win \
          JOIN process_counter_track t ON c.track_id = t.id \
          JOIN process p ON t.upid = p.upid \
          WHERE t.name = 'mem.rss' AND p.name = '{pkg}' \
@@ -1558,6 +1575,19 @@ mod tests {
             s.cells.get(&SummaryKey::JankFrameCount).unwrap(),
             CellState::MissingTable
         ));
+    }
+
+    #[test]
+    fn trace_window_prefers_tracing_metadata_over_trace_bounds() {
+        for key in [SummaryKey::TraceDurationNs, SummaryKey::RssOverTime] {
+            let sq = SummaryKey::all_queries(&ctx())
+                .into_iter()
+                .find(|q| q.key == key)
+                .unwrap();
+            assert!(sq.sql.contains("'tracing_started_ns'"), "{key:?}");
+            assert!(sq.sql.contains("'tracing_disabled_ns'"), "{key:?}");
+            assert!(sq.sql.contains("FROM trace_bounds"), "{key:?}: fallback");
+        }
     }
 
     #[test]
