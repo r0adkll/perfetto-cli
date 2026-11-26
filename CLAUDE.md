@@ -321,6 +321,18 @@ browser dependency for the second.
   before building the textproto. Without this, `android.os.Trace.beginSection`
   calls from the app are no-ops because `debug.atrace.app_*` system
   properties aren't set for the target package.
+- **`linux.process_stats` writes to its own buffer (`target_buffer: 1`).**
+  Process/thread names are emitted once (start-of-trace scan, then on
+  first sight of a new pid), so in the shared ring buffer a long capture
+  overwrites them and every pid comes out unnamed. `textproto::build` adds
+  a second buffer sized like ui.perfetto.dev's `proc_assoc` (main/16,
+  clamped 256–8192 KB) but always `DISCARD`: when it fills, later memory
+  polls drop instead of the names. Only emitted when process_stats is.
+- **Don't use `trace_bounds` as the capture window.** It spans every
+  event, and one producer with a skewed clock (Chromium/WebView
+  `track_event`) can push `start_ts` days early. Summary queries use
+  `CAPTURE_WINDOW_CTE` (metadata `tracing_started_ns` /
+  `tracing_disabled_ns`, falling back to `trace_bounds`).
 - **`track_event` data source is gated on `config.compose_tracing`** in the
   textproto builder. Compose events won't make it to the buffer without it,
   even if the enable broadcast succeeds.

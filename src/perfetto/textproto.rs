@@ -213,7 +213,9 @@ pub fn build(config: &TraceConfig) -> String {
     // -----------------------------------------------------------------------
     let mut out = String::new();
 
-    // Buffer
+    let process_stats = config.memory.per_process_stats || needs_proc_assoc;
+
+    // Buffer 0: everything else.
     out.push_str("buffers: {\n");
     out.push_str(&format!("  size_kb: {}\n", config.buffer_size_kb));
     out.push_str(&format!(
@@ -221,6 +223,22 @@ pub fn build(config: &TraceConfig) -> String {
         config.fill_policy.textproto()
     ));
     out.push_str("}\n");
+
+    // Buffer 1: linux.process_stats only. Its process/thread names are
+    // written once (start-of-trace scan, then on first sight of a new pid),
+    // so in a shared ring buffer they're the first thing a long capture
+    // overwrites — leaving every pid unnamed. Same split as ui.perfetto.dev's
+    // `proc_assoc` buffer, but always DISCARD: keeping the names beats
+    // keeping the newest memory polls once it fills.
+    if process_stats {
+        out.push_str("buffers: {\n");
+        out.push_str(&format!(
+            "  size_kb: {}\n",
+            process_stats_buffer_kb(config.buffer_size_kb)
+        ));
+        out.push_str("  fill_policy: DISCARD\n");
+        out.push_str("}\n");
+    }
 
     // linux.sys_stats (merged from CPU coarse, CPU freq, meminfo)
     if !sys_stats_fields.is_empty() {
@@ -257,8 +275,8 @@ pub fn build(config: &TraceConfig) -> String {
     }
 
     // §5.7 / §11.2 linux.process_stats (auto-dependency or explicit)
-    if config.memory.per_process_stats || needs_proc_assoc {
-        out.push_str("data_sources: {\n  config {\n    name: \"linux.process_stats\"\n    process_stats_config {\n");
+    if process_stats {
+        out.push_str("data_sources: {\n  config {\n    name: \"linux.process_stats\"\n    target_buffer: 1\n    process_stats_config {\n");
         out.push_str("      scan_all_processes_on_start: true\n");
         if config.memory.per_process_stats && config.memory.process_poll_ms > 0 {
             out.push_str(&format!(
@@ -285,6 +303,12 @@ pub fn build(config: &TraceConfig) -> String {
     out.push_str(&format!("duration_ms: {}\n", config.duration_ms));
 
     out
+}
+
+/// Size of the dedicated `linux.process_stats` buffer: 1/16th of the main
+/// buffer, clamped to 256 KB–8 MB (ui.perfetto.dev's sizing).
+fn process_stats_buffer_kb(main_kb: u32) -> u32 {
+    (main_kb / 16).clamp(256, 8 * 1024)
 }
 
 fn quote(s: &str) -> String {
@@ -417,6 +441,37 @@ mod tests {
         assert!(txt.contains("oom/oom_score_adj_update"));
         // proc_assoc auto-dependency
         assert!(txt.contains("linux.process_stats"));
+    }
+
+    #[test]
+    fn process_stats_gets_its_own_discard_buffer() {
+        let cfg = TraceConfig::default();
+        let txt = build(&cfg);
+        // Main buffer keeps the configured policy; buffer 1 is a 4 MB
+        // DISCARD buffer that only linux.process_stats writes to.
+        assert!(txt.starts_with(
+            "buffers: {\n  size_kb: 65536\n  fill_policy: RING_BUFFER\n}\n\
+             buffers: {\n  size_kb: 4096\n  fill_policy: DISCARD\n}\n"
+        ));
+        assert!(txt.contains("name: \"linux.process_stats\"\n    target_buffer: 1\n"));
+        assert_eq!(txt.matches("target_buffer:").count(), 1);
+    }
+
+    #[test]
+    fn no_process_stats_means_single_buffer() {
+        let mut cfg = TraceConfig::default();
+        cfg.memory.per_process_stats = false;
+        let txt = build(&cfg);
+        assert!(!txt.contains("linux.process_stats"), "precondition: {txt}");
+        assert_eq!(txt.matches("buffers: {").count(), 1);
+        assert!(!txt.contains("target_buffer"));
+    }
+
+    #[test]
+    fn process_stats_buffer_size_is_clamped() {
+        assert_eq!(process_stats_buffer_kb(1024), 256);
+        assert_eq!(process_stats_buffer_kb(65_536), 4096);
+        assert_eq!(process_stats_buffer_kb(1_048_576), 8192);
     }
 
     #[test]
