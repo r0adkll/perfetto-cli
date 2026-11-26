@@ -74,6 +74,28 @@ pub struct SummaryQuery {
 }
 
 impl SummaryKey {
+    /// Stable snake_case name used as the metric key in
+    /// `perfetto-cli query --summary` output. Changing one is a breaking
+    /// change to the headless JSON contract.
+    pub fn id(self) -> &'static str {
+        match self {
+            SummaryKey::DeviceFingerprint => "device_fingerprint",
+            SummaryKey::TraceDurationNs => "trace_duration_ns",
+            SummaryKey::JankFrameCount => "jank_frame_count",
+            SummaryKey::TotalFrameCount => "total_frame_count",
+            SummaryKey::FrameDurPercentiles => "frame_dur_percentiles",
+            SummaryKey::MainThreadRunningNs => "main_thread_running_ns",
+            SummaryKey::MainThreadTotalNs => "main_thread_total_ns",
+            SummaryKey::StartupInfo => "startup",
+            SummaryKey::RssOverTime => "rss_over_time",
+            SummaryKey::MainThreadTopSlices => "main_thread_top_slices",
+            SummaryKey::HasFtrace => "ftrace_event_count",
+            SummaryKey::HasFrameTimeline => "frame_timeline_count",
+            SummaryKey::HasStartups => "startup_count",
+            SummaryKey::HasThreadState => "thread_state_count",
+        }
+    }
+
     pub fn all_queries(ctx: &SummaryContext) -> Vec<SummaryQuery> {
         vec![
             SummaryQuery {
@@ -297,7 +319,7 @@ fn rss_over_time_sql(package: &str) -> String {
 
 /// Double any single-quote so an interpolated value can't break out of its
 /// SQL string literal.
-pub(super) fn escape_sql_literal(s: &str) -> String {
+pub(crate) fn escape_sql_literal(s: &str) -> String {
     s.replace('\'', "''")
 }
 
@@ -1536,6 +1558,15 @@ mod tests {
             s.cells.get(&SummaryKey::JankFrameCount).unwrap(),
             CellState::MissingTable
         ));
+    }
+
+    #[test]
+    fn summary_ids_are_unique() {
+        let ids: std::collections::HashSet<_> = SummaryKey::all_queries(&ctx())
+            .iter()
+            .map(|sq| sq.key.id())
+            .collect();
+        assert_eq!(ids.len(), SummaryKey::all_queries(&ctx()).len());
     }
 
     #[test]

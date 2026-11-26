@@ -1,6 +1,6 @@
 ---
 name: perfetto-cli
-description: Perfetto traces of Android apps via the `perfetto-cli` command. Use to capture a trace (cold start, jank, a single run), organize captures into sessions, upload/share traces, or open one in ui.perfetto.dev with startup commands.
+description: Perfetto traces of Android apps via the `perfetto-cli` command. Use to capture a trace (cold start, jank, a single run), analyze it with PerfettoSQL (main-thread slices, janky frames), organize captures into sessions, upload/share traces, or open one in ui.perfetto.dev with startup commands.
 ---
 
 <!-- Installed by perfetto-cli v{{version}}. Re-run `perfetto-cli skills install` after upgrading. -->
@@ -22,6 +22,45 @@ Pass `--json` on every call. stdout then holds exactly one JSON document; progre
 4. **Share** (only when asked). Append `--upload` to the capture, or run `perfetto-cli upload "<scenario>" --trace <id> --json` afterwards. Done when every uploaded trace has a `url`.
 
 Label runs so they compare cleanly: `--name before-fix` / `--name after-fix`, and `--tag` for the variable under test.
+
+## Analysis loop
+
+After a capture, read the trace yourself with `query`. It runs PerfettoSQL through a pinned `trace_processor_shell` that perfetto-cli downloads, verifies, and runs itself (the first call takes a few extra seconds); never download or run a trace processor yourself.
+
+`perfetto-cli query "<scenario>" [--trace <id|name>] --sql "<PerfettoSQL>" --json`
+
+- `--trace` takes the `trace.id` from `capture` (or the trace's name / file stem); without it, the session's newest trace is used.
+- `--file <path>` reads SQL from a file, or from stdin with `--file -`. Statements may be `;`-separated (e.g. `INCLUDE PERFETTO MODULE ...;` first); only the last statement's rows come back.
+- `{{package}}` in the SQL expands to the session's package name.
+- Output: `{"session_id", "session_name", "package", "trace": {...}, "trace_processor": "<version>", "columns": [...], "rows": [[...], ...], "row_count": N}`. Each row is an array aligned with `columns`; ints and floats are numbers, NULL is `null`, blobs are base64 strings. Timestamps and durations are nanoseconds. A SQL error exits non-zero with the trace processor's message on stderr.
+- `--summary` (instead of `--sql`) returns `metrics`, keyed by name (`jank_frame_count`, `total_frame_count`, `frame_dur_percentiles`, `main_thread_running_ns`, `main_thread_total_ns`, `main_thread_top_slices`, `startup`, `rss_over_time`, `trace_duration_ns`, ...). Each metric has `"status": "ok"` plus `value` or `columns`/`rows`, `"status": "missing"` when the trace lacks that data, or `"status": "error"` with `error`. Summary metrics match the app by process name only; if they come back zero or NULL, use the queries below.
+
+Find the app's processes with `t.name = substr('{{package}}', -15)` as well as `p.name = '{{package}}'`, as both queries below do. The process name is missing from some traces (when the ring buffer wraps, it overwrites the process list recorded at the start), and Linux truncates the main thread's name to the last 15 characters of the package.
+
+Longest main-thread slices, grouped by name:
+
+```sql
+SELECT s.name, COUNT(*) AS n, SUM(s.dur) / 1e6 AS total_ms, MAX(s.dur) / 1e6 AS max_ms
+FROM slice s
+JOIN thread_track tt ON s.track_id = tt.id
+JOIN thread t USING (utid)
+LEFT JOIN process p USING (upid)
+WHERE t.is_main_thread = 1
+  AND (p.name = '{{package}}' OR t.name = substr('{{package}}', -15))
+GROUP BY s.name ORDER BY total_ms DESC LIMIT 20
+```
+
+Janky frames. A frame is janky when `on_time_finish = 0` (it missed its deadline). Don't count `jank_type != 'None'`, which flags nearly every frame:
+
+```sql
+SELECT COUNT(*) AS frames, SUM(aft.on_time_finish = 0) AS janky, MAX(aft.dur) / 1e6 AS worst_ms
+FROM actual_frame_timeline_slice aft
+JOIN thread t ON t.upid = aft.upid AND t.is_main_thread = 1
+LEFT JOIN process p ON p.upid = aft.upid
+WHERE p.name = '{{package}}' OR t.name = substr('{{package}}', -15)
+```
+
+To list the janky frames themselves, select `aft.ts, aft.dur, aft.jank_type`, add `AND aft.on_time_finish = 0`, and order by `aft.dur DESC`. Done when you can name the slices or frames behind the regression, with numbers from the trace.
 
 ## Gotchas
 

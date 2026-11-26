@@ -35,7 +35,7 @@ A terminal UI for capturing and managing [Perfetto](https://perfetto.dev) traces
 | 🔬 | **Local trace analysis** | PerfettoSQL queries via a bundled `trace_processor_shell` — Summary dashboard, SQL REPL, and per-app saved metrics |
 | 📥 | **Macrobenchmark import** | `perfetto-cli import <dir>` turns a Macrobenchmark output directory into read-only sessions, one per `@Test` method |
 | ☁️ | **Cloud upload** | Upload traces to Google Drive or Amazon S3 with progress, cancellation, and shareable links |
-| 🤖 | **Headless CLI + agent skill** | Script sessions, captures, uploads, and opens with JSON output; `skills install` teaches Claude Code, Codex, Gemini CLI, Cursor, and Copilot to use it |
+| 🤖 | **Headless CLI + agent skill** | Script sessions, captures, PerfettoSQL queries, uploads, and opens with JSON output; `skills install` teaches Claude Code, Codex, Gemini CLI, Cursor, and Copilot to use it |
 | 🔀 | **Multi-provider picker** | Choose which cloud provider to upload to or share from when multiple are configured |
 | 🎨 | **Theming** | 39 built-in themes via a searchable picker, plus custom themes in `~/.config/perfetto-cli/themes/` |
 
@@ -152,6 +152,7 @@ perfetto-cli capture <session> [--name STEM] [--tag T]... [--device S]
     [--open] [--upload [--provider ID]]
 perfetto-cli upload <session> [--trace ID]... | [--latest] [--provider ID]
 perfetto-cli open <trace-id | path> [--commands SET]... [--timeout SECS]
+perfetto-cli query <session> [--trace ID|NAME] --sql SQL | --file PATH | --summary
 ```
 
 To teach a coding agent this workflow, install the bundled [Agent Skill](https://agentskills.io):
@@ -171,9 +172,15 @@ A typical agent loop — create the session once, then capture and share each ru
 perfetto-cli session create --name "Campfire startup" --package app.campfire.android \
   --commands "Startup" --cold --duration 5 --if-not-exists --json
 perfetto-cli capture "Campfire startup" --name before-fix --tag baseline --upload --json
+perfetto-cli query "Campfire startup" --trace before-fix --json \
+  --sql "SELECT COUNT(*) AS slices FROM slice JOIN thread_track tt ON slice.track_id = tt.id
+         JOIN thread t USING(utid) JOIN process p USING(upid)
+         WHERE p.name = '{{package}}' AND t.is_main_thread = 1"
 ```
 
 `capture` blocks until perfetto finishes; `Ctrl-C` stops early and keeps the partial trace. Overrides passed to `capture` apply to that run only; on `session create`/`update` they're saved. `--device` defaults to the session's device, else the only online device. `--commands` is repeatable; like the TUI's multi-select picker, sets merge in the order `command-sets` lists them (not argument order), and session JSON reports the matching sets under `command_sets`. Uploads use the default provider picked in the TUI's cloud settings unless `--provider` (`google_drive`, `amazon_s3`) is given; set up credentials in the TUI first. `open` waits for ui.perfetto.dev to fetch the trace, then exits.
+
+`query` runs PerfettoSQL against a trace headlessly, through the same pinned, SHA-256-verified `trace_processor_shell` as the Analysis screen (downloaded, or upgraded from an older cached version, before the first run). `--trace` takes a trace id or name and defaults to the session's newest trace; `.tar` in-process bundles load as one merged trace. SQL comes from `--sql` or `--file` (`-` reads stdin), may hold several `;`-separated statements (the last one's rows are returned), and `{{package}}` expands to the session's package. Output is a table, or with `--json` an object with `columns` and `rows` (one array per row; NULL → `null`, blobs → base64). `--summary` runs the Summary tab's canned metrics instead and returns them under `metrics`, each with a `status` of `ok`, `missing`, or `error`.
 
 ## Theming
 

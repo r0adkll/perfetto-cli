@@ -23,7 +23,7 @@ under `~/.config/perfetto-cli/`:
 ```
 src/
 ├── adb/              # async adb wrapper (list_live_devices, run, list_installed_packages)
-├── cli/              # headless subcommands (session/capture/upload/open/…) — see "Headless CLI"
+├── cli/              # headless subcommands (session/capture/query/upload/open/…) — see "Headless CLI"
 ├── perfetto/
 │   ├── config.rs     # TraceConfig struct + FillPolicy enum
 │   ├── presets.rs    # Preset enum with 4 variants
@@ -130,6 +130,11 @@ through `resolve_session` (id → name → folder slug); devices through
 on `capture`. Repeatable `--commands` goes through `resolve_command_sets`,
 which reuses `merge_selected_command_sets` (display order) so the TUI's
 `command_sets_matching_commands` can restore the picker's checkmarks.
+
+`query` loads traces through `TraceProcessor::load` (which owns the
+pinned-binary install/upgrade) and `--summary` reuses
+`SummaryKey::all_queries`; metric names come from `SummaryKey::id()` and
+are part of the JSON contract.
 
 `assets/skills/perfetto-cli/SKILL.md` is the agent skill that
 `perfetto-cli skills install` writes out (embedded via `include_str!`,
@@ -386,6 +391,9 @@ Unit tests live in `#[cfg(test)]` modules at the bottom of each source file
 - `session::tests` — `slugify` edge cases.
 - `cli::tests` — session selector resolution (id/name/slug/ambiguous),
   `ConfigOverrides::apply`, command-set merge order + round-trip.
+- `cli::query::tests` — trace selection (default newest, id/label/stem,
+  ambiguous), `{{package}}` escaping, cell → JSON mapping, table
+  formatting, summary metric JSON shape.
 - `tui::text_input::tests` — every edit shortcut + word-boundary cases for
   whitespace, `-`, and `_`.
 - `trace_processor::query::tests` — CellsBatch decoder: every cell kind,
