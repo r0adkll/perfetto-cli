@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Headless trace analysis** — `perfetto-cli query <session> [--trace ID|NAME] --sql SQL` runs PerfettoSQL against a captured trace (newest by default) and prints a table, or one JSON document with `columns` and `rows` under `--json`. `--file PATH` (`-` for stdin) reads the SQL from a file, `{{package}}` expands to the session's package, and `--summary` returns the Analysis screen's Summary metrics instead. Uses the same pinned, SHA-256-verified `trace_processor_shell` as the Analysis screen, downloading it or replacing an older cached version first; `.tar` in-process bundles load as one merged trace
+- The bundled agent skill now covers the analysis loop: capture, then `query`, with example PerfettoSQL for main-thread slices and janky frames
+
 ## [0.6.0] - 2026-10-03
 
 ### Changed

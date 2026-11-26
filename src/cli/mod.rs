@@ -6,6 +6,7 @@
 //! exact name (case-insensitive), or folder slug — see `resolve_session`.
 
 mod capture;
+mod query;
 mod resources;
 mod session;
 mod skills;
@@ -29,6 +30,7 @@ use crate::perfetto::commands::StartupCommand;
 use crate::session::Session;
 
 pub use capture::{CaptureArgs, run_capture};
+pub use query::{QueryArgs, run_query};
 pub use resources::{list_command_sets, list_configs, list_devices};
 pub use session::{SessionCommand, run_session};
 pub use skills::{SkillsCommand, run_skills};

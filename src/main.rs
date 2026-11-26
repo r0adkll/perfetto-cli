@@ -68,6 +68,8 @@ enum Command {
     Upload(cli::UploadArgs),
     /// Open a trace in ui.perfetto.dev with its session's startup commands.
     Open(cli::OpenArgs),
+    /// Run PerfettoSQL (or the Summary metrics) against a captured trace.
+    Query(cli::QueryArgs),
     /// List saved trace configs.
     Configs,
     /// List saved startup command sets.
@@ -111,6 +113,7 @@ async fn main() -> Result<()> {
         Command::Capture(args) => cli::run_capture(&ctx, args).await,
         Command::Upload(args) => cli::run_upload(&ctx, args).await,
         Command::Open(args) => cli::run_open(&ctx, args).await,
+        Command::Query(args) => cli::run_query(&ctx, args).await,
         Command::Configs => cli::list_configs(&ctx),
         Command::CommandSets => cli::list_command_sets(&ctx),
         Command::Skills(cmd) => cli::run_skills(&ctx, cmd),
